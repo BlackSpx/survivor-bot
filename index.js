@@ -711,13 +711,20 @@ client.on('messageCreate', async (message) => {
     // Direct messages: Survivor chats privately, but ONLY about games and ONLY
     // with linked players (those who have run !link). Everyone else is ignored.
     if (message.channel.isDMBased()) {
+      // Allow ! commands in DMs too, so players can !link (or !points, etc.)
+      // without ever touching the server.
+      if (message.content.startsWith('!')) {
+        const handled = await handleCommand(message);
+        if (handled) return;
+      }
       if (onCooldown(message.author.id)) return; // spam guard
       const player = db.getPlayer(message.author.id);
       if (!player?.steam_id) {
         // Not a linked player — nudge them to link instead of staying silent.
         await message.reply(
           `I don't trade survival tips with ghosts. Link up first — run ` +
-          `\`!link <your-steamid64>\` in the server, then come talk games with me.`
+          `\`!link <your-steamid64>\` right here in this DM (or in the server), ` +
+          `then come talk games with me.`
         );
         return;
       }
