@@ -1,0 +1,19 @@
+{
+  "name": "survivor-bot",
+  "version": "1.0.0",
+  "description": "Survivor — a sarcastic Discord bot that tracks The Forest Steam achievements, awards points, and assigns reward roles.",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@google/genai": "^1.0.0",
+    "better-sqlite3": "^12.4.1",
+    "discord.js": "^14.23.2",
+    "dotenv": "^17.2.3"
+  }
+}
