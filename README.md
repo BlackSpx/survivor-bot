@@ -72,6 +72,14 @@ still work anywhere.)
 Conversation memory is **persisted to the database**, so he remembers the recent
 chat even across restarts/redeploys.
 
+### Telling Survivor who his owner is
+
+Set `OWNER_NAME`, `OWNER_DISCORD_ID`, and/or `OWNER_STEAM` in `.env` and Survivor
+will answer (in character) when someone asks **"who owns the bot?"** — naming you
+and, if you gave a Discord ID, linking you with a clickable mention. He keeps it
+to himself unless asked. By default the mention **won't ping** you; set
+`OWNER_PING=true` if you want the notification. Leave these blank to disable.
+
 ### What about achievements members already have?
 
 The first time the bot sees a player it has two modes, controlled by

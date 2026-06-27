@@ -31,6 +31,8 @@ const {
   NOW_PLAYING_ENABLED = 'false',
   RECAP_ENABLED = 'false',
   BACKFILL_EXISTING = 'false',
+  OWNER_DISCORD_ID = '',
+  OWNER_PING = 'false',
 } = process.env;
 
 const POINTS_PER_ACHIEVEMENT = 10;
@@ -442,7 +444,13 @@ async function converse(message, { dm = false } = {}) {
   db.appendChat(channelId, 'model', reply);
   db.trimChat(channelId, 50);
 
-  await message.reply(reply);
+  // Render any owner mention as a clickable link without pinging people on every
+  // reply. Set OWNER_PING=true to actually ping the owner when they're named.
+  const allowedMentions =
+    OWNER_PING === 'true' && OWNER_DISCORD_ID
+      ? { users: [OWNER_DISCORD_ID], repliedUser: true }
+      : { parse: [], repliedUser: true };
+  await message.reply({ content: reply, allowedMentions });
 }
 
 // ── Command logic (shared by ! prefix and / slash commands) ──────────────────

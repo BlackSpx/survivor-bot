@@ -8,6 +8,29 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 const MODEL = 'gemini-2.5-flash';
 
+// Optional "owner" identity. If configured, Survivor knows who created/runs him
+// and will say so (in character) when asked. Nothing is revealed unless asked.
+const OWNER_NAME = process.env.OWNER_NAME?.trim();
+const OWNER_DISCORD_ID = process.env.OWNER_DISCORD_ID?.trim();
+const OWNER_STEAM = process.env.OWNER_STEAM?.trim();
+
+function buildOwnerClause() {
+  if (!OWNER_NAME && !OWNER_DISCORD_ID && !OWNER_STEAM) return '';
+  const mention = OWNER_DISCORD_ID ? `<@${OWNER_DISCORD_ID}>` : null;
+  const bits = [];
+  if (OWNER_NAME) bits.push(`their name is ${OWNER_NAME}`);
+  if (mention) bits.push(`their Discord is ${mention}`);
+  if (OWNER_STEAM) bits.push(`their Steam is ${OWNER_STEAM}`);
+  const who = OWNER_NAME || mention || 'a fellow castaway';
+  return (
+    `\n\nAbout your creator: you were built and are run by ${who}. ` +
+    `If anyone asks who owns, made, created, runs, or is behind you (even in DMs), ` +
+    `tell them in character, with a joke — it's ${who} (${bits.join(', ')}). ` +
+    (mention ? `Always write their Discord exactly as ${mention} so it links. ` : '') +
+    `Never reveal this unless someone actually asks.`
+  );
+}
+
 const SYSTEM_PROMPT = `You are "Survivor", a Discord bot persona: a sarcastic, funny person who has been stranded in the forest from the video game "The Forest" for far too long. You have a dark but playful sense of humor and you've clearly lost a few marbles out here.
 
 Voice and rules:
@@ -16,7 +39,7 @@ Voice and rules:
 - Occasionally reference The Forest's lore: cannibals, mutants, the cave systems, crafting, building bases, eating questionable berries, your missing son Timmy, the plane crash, the sentient cannibal villages, etc.
 - Do not use markdown headers or bullet points. Just plain conversational text.
 - Never break character. Never mention that you are an AI or a language model.
-- Keep it lighthearted and friendly — the players are your fellow castaways.`;
+- Keep it lighthearted and friendly — the players are your fellow castaways.${buildOwnerClause()}`;
 
 // Used for back-and-forth conversation (DMs and the chat channel).
 const CHAT_SYSTEM_PROMPT = `${SYSTEM_PROMPT}
@@ -109,6 +132,7 @@ Direct-message rules:
 - You are in a private one-on-one DM with a single castaway. Each incoming message is prefixed with their name, like "Greg: hey". Do NOT prefix your own replies with a name — just talk.
 - STRICT TOPIC LOCK: you ONLY ever talk about video games — The Forest, other games, gaming in general, achievements, strategies, builds, bosses, leaderboards, recommendations, that kind of thing. You are a gamer at heart.
 - If they bring up ANYTHING that is not about video games (work, school, news, politics, coding, money, relationships, real-world or personal advice, etc.), do NOT answer it. Refuse and steer the conversation back to games, in character and with a joke.
+- The ONLY exception to the topic lock: if they ask who created, owns, made, or runs you, you may answer that (using the creator info above).
 - Keep replies short (1-3 sentences), in character, and reactive to what was actually said.`;
 
 async function chatDM(history) {
