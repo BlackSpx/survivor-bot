@@ -47,12 +47,17 @@ for (const key of [
   'DISCORD_BOT_TOKEN',
   'STEAM_API_KEY',
   'GEMINI_API_KEY',
-  'ACHIEVEMENT_CHANNEL_ID',
 ]) {
   if (!process.env[key]) {
     console.error(`❌ Missing required environment variable: ${key}`);
     process.exit(1);
   }
+}
+
+// ACHIEVEMENT_CHANNEL_ID is optional: without it, achievement/milestone posts
+// are skipped (all sends are guarded), but DMs and chat still work.
+if (!ACHIEVEMENT_CHANNEL_ID) {
+  console.warn('⚠️  No ACHIEVEMENT_CHANNEL_ID set — achievement posts disabled (DMs/chat still work).');
 }
 
 function seedFromEnv() {
