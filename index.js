@@ -501,6 +501,15 @@ async function actionLink(userId, username, steamId) {
         'That needs to be a 17-digit SteamID64. Find yours at https://steamid.io/',
     };
   }
+  const owner = db.getPlayerBySteamId(steamId);
+  if (owner && owner.discord_id !== userId) {
+    return {
+      content:
+        `That Steam account is already linked to <@${owner.discord_id}>. ` +
+        `Each Steam ID can only belong to one player — if it's really yours, ` +
+        `have them unlink first. (One Discord = one Steam.)`,
+    };
+  }
   db.linkPlayer(userId, steamId);
   const summary = await getPlayerSummary(steamId);
   if (summary?.personaname) db.setSteamName(userId, summary.personaname);
@@ -508,6 +517,19 @@ async function actionLink(userId, username, steamId) {
     content:
       `🔗 Linked **${username}** to Steam${summary?.personaname ? ` account **${summary.personaname}**` : ''}. ` +
       `Go unlock something — I'm watching.`,
+  };
+}
+
+function actionUnlink(userId, username) {
+  const player = db.getPlayer(userId);
+  if (!player?.steam_id) {
+    return { content: `**${username}**, you don't have a Steam account linked.` };
+  }
+  db.unlinkPlayer(userId);
+  return {
+    content:
+      `🔌 Unlinked **${username}** from Steam. Your points stay put — ` +
+      `run \`!link <steamid64>\` whenever you want back in.`,
   };
 }
 
@@ -555,6 +577,9 @@ async function handleCommand(message) {
       return true;
     case '!link':
       await message.reply(await actionLink(message.author.id, message.author.username, args[0]));
+      return true;
+    case '!unlink':
+      await message.reply(actionUnlink(message.author.id, message.author.username));
       return true;
     case '!survey': {
       const p = await payloadSurvey();
@@ -610,6 +635,7 @@ function buildSlashCommands() {
       .addStringOption((o) =>
         o.setName('steamid').setDescription('Your 17-digit SteamID64').setRequired(true)
       ),
+    new SlashCommandBuilder().setName('unlink').setDescription('Unlink your Steam ID'),
     new SlashCommandBuilder().setName('survey').setDescription('Survivor asks the group a question'),
     new SlashCommandBuilder()
       .setName('addpoints')
@@ -666,6 +692,11 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.editReply(
           await actionLink(interaction.user.id, interaction.user.username, interaction.options.getString('steamid'))
         );
+      case 'unlink':
+        return interaction.reply({
+          ...actionUnlink(interaction.user.id, interaction.user.username),
+          flags: MessageFlags.Ephemeral,
+        });
       case 'survey':
         await interaction.deferReply();
         return interaction.editReply(await payloadSurvey());

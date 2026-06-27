@@ -59,6 +59,13 @@ export function linkPlayer(discordId, steamId) {
   upsertLinkStmt.run({ discord_id: discordId, steam_id: steamId });
 }
 
+const unlinkStmt = db.prepare(
+  'UPDATE players SET steam_id = NULL, steam_name = NULL WHERE discord_id = ?'
+);
+export function unlinkPlayer(discordId) {
+  return unlinkStmt.run(discordId).changes > 0;
+}
+
 const ensurePlayerStmt = db.prepare(
   'INSERT OR IGNORE INTO players (discord_id) VALUES (?)'
 );
@@ -70,6 +77,13 @@ export function ensurePlayer(discordId) {
 const getPlayerStmt = db.prepare('SELECT * FROM players WHERE discord_id = ?');
 export function getPlayer(discordId) {
   return getPlayerStmt.get(discordId);
+}
+
+const getPlayerBySteamIdStmt = db.prepare(
+  'SELECT * FROM players WHERE steam_id = ?'
+);
+export function getPlayerBySteamId(steamId) {
+  return getPlayerBySteamIdStmt.get(steamId);
 }
 
 const getLinkedPlayersStmt = db.prepare(
