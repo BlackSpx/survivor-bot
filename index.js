@@ -14,10 +14,10 @@ import {
 } from 'discord.js';
 
 import * as db from './src/db.js';
-import { getPlayerAchievements, getPlayerSummary } from './src/steam.js';
+import { getPlayerAchievements, getPlayerSummary, getGlobalAchievementPct } from './src/steam.js';
 import * as survivor from './src/survivor.js';
 import * as health from './src/health.js';
-import { REWARDS, milestonesCrossed, rewardForPoints } from './src/rewards.js';
+import { REWARDS, milestonesCrossed, rewardForPoints, rarityTier } from './src/rewards.js';
 import { TRACKED_APP_IDS, gameName } from './src/games.js';
 
 const {
@@ -34,7 +34,11 @@ const {
 } = process.env;
 
 const POINTS_PER_ACHIEVEMENT = 10;
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const FIRST_BLOOD_BONUS = 15; // first in the group to unlock an achievement
+const STREAK_BONUS_PER_DAY = 2; // bonus per day of an active unlock streak...
+const STREAK_BONUS_MAX = 20; // ...capped here so streaks can't run away
+const DAY_MS = 24 * 60 * 60 * 1000;
+const WEEK_MS = 7 * DAY_MS;
 const NOW_PLAYING_MIN_GAP_MS = 2 * 60 * 60 * 1000; // don't re-announce within 2h
 
 const nowPlayingOn = NOW_PLAYING_ENABLED === 'true';
@@ -178,10 +182,16 @@ async function pollPlayer(player, channel) {
   for (const appId of TRACKED_APP_IDS) {
     const achievements = await getPlayerAchievements(player.steam_id, appId);
     if (!achievements) continue;
+    const rarityMap = await getGlobalAchievementPct(appId); // may be null
 
     for (const ach of achievements) {
       if (!ach.achieved) continue;
       if (db.hasAchievement(player.discord_id, appId, ach.apiname)) continue;
+
+      // Bonuses (checked BEFORE recording, so first-blood sees a clean slate).
+      const firstBlood = db.achievementOwnerCount(appId, ach.apiname) === 0;
+      const pct = rarityMap?.get(ach.apiname);
+      const rarity = rarityTier(pct);
 
       db.recordAchievement(
         player.discord_id,
@@ -192,9 +202,23 @@ async function pollPlayer(player, channel) {
         1 // awarded
       );
 
+      const streak = db.recordUnlockDay(player.discord_id, Math.floor(Date.now() / DAY_MS));
+      const streakBonus = Math.min((streak.current - 1) * STREAK_BONUS_PER_DAY, STREAK_BONUS_MAX);
+      const firstBloodBonus = firstBlood ? FIRST_BLOOD_BONUS : 0;
+      const rarityBonus = rarity?.bonus ?? 0;
+      const gained = POINTS_PER_ACHIEVEMENT + firstBloodBonus + rarityBonus + Math.max(0, streakBonus);
+
       const before = db.getPlayer(player.discord_id).points;
-      const after = db.addPoints(player.discord_id, POINTS_PER_ACHIEVEMENT);
-      await announceAchievement(channel, name, ach.displayName, gameName(appId), after);
+      const after = db.addPoints(player.discord_id, gained);
+      await announceAchievement(channel, name, ach.displayName, gameName(appId), after, {
+        gained,
+        firstBloodBonus,
+        rarity,
+        rarityPct: pct,
+        rarityBonus,
+        streak,
+        streakBonus: Math.max(0, streakBonus),
+      });
       await handleMilestones(channel, player.discord_id, name, before, after);
     }
   }
@@ -246,14 +270,29 @@ async function seedPlayer(player, channel) {
   }
 }
 
-async function announceAchievement(channel, name, achievementName, game, total) {
+async function announceAchievement(channel, name, achievementName, game, total, award) {
   const comment = await survivor.commentOnAchievement(name, achievementName);
+
+  const bonusLines = [];
+  if (award.firstBloodBonus) {
+    bonusLines.push(`🩸 **First Blood!** First in the group to grab this — +${award.firstBloodBonus}`);
+  }
+  if (award.rarity) {
+    const pctText = award.rarityPct != null ? ` · only ${award.rarityPct.toFixed(1)}% have it` : '';
+    bonusLines.push(`${award.rarity.emoji} **${award.rarity.label}**${pctText} — +${award.rarityBonus}`);
+  }
+  if (award.streakBonus > 0) {
+    bonusLines.push(`🔥 **${award.streak.current}-day streak** — +${award.streakBonus}`);
+  }
+  const breakdown = bonusLines.length ? `\n${bonusLines.join('\n')}` : '';
+
   const embed = new EmbedBuilder()
-    .setColor(0x4caf50)
+    .setColor(award.firstBloodBonus ? 0xe53935 : 0x4caf50)
     .setDescription(
       `🏆 **${name}** just unlocked "**${achievementName}**"! _(${game})_\n\n` +
-        `${comment}\n\n` +
-        `**+${POINTS_PER_ACHIEVEMENT} pts** | Total: **${total} pts**`
+        `${comment}\n` +
+        breakdown +
+        `\n\n**+${award.gained} pts** | Total: **${total} pts**`
     );
   if (channel) await channel.send({ embeds: [embed] });
 }
@@ -408,6 +447,44 @@ async function converse(message, { dm = false } = {}) {
 
 // ── Command logic (shared by ! prefix and / slash commands) ──────────────────
 
+function payloadHelp(isAdminUser = false) {
+  const lines = [
+    '🌲 **Survivor** tracks your **The Forest** & **Sons of the Forest** achievements,',
+    'turns them into points, ranks a leaderboard, and roasts you the whole way.',
+    'Every command works as `!cmd` **or** `/cmd`, anywhere — even in my DMs.',
+    '',
+    '**🚀 Getting started**',
+    '`!link <steamid64>` — link your Steam (find it at https://steamid.io/)',
+    '> Your Steam profile + *Game details* must be Public, or I can\'t see your unlocks.',
+    '',
+    '**📊 See how you\'re doing**',
+    '`!stats [@user]` — your survivor card (points, streak, rank role)',
+    '`!rank` — your spot on the board + who\'s ahead of you',
+    '`!points` — just your point total',
+    '`!leaderboard` — everyone ranked by points',
+    '`!progress [@user]` — achievement completion % per game',
+    '`!achievements [@user]` — list everything unlocked',
+    '',
+    '**🎉 For fun**',
+    '`!survey` — I ask the group a random (unhinged) question',
+    '`!unlink` — remove your Steam link (your points stay)',
+    '`!help` — this list',
+    '',
+    '**💰 How points work**',
+    `> +${POINTS_PER_ACHIEVEMENT} per achievement · 🩸 +${FIRST_BLOOD_BONUS} for being first in the group to grab one · ` +
+      `💎 rarity bonus for hard ones · 🔥 streak bonus for unlocking on back-to-back days.`,
+  ];
+  if (isAdminUser) {
+    lines.push(
+      '',
+      '**🔒 Admin only**',
+      '`!addpoints @user <n>` — add points (negative to subtract)',
+      '`!setpoints @user <n>` — set a point total'
+    );
+  }
+  return { content: lines.join('\n') };
+}
+
 function progressBar(pct) {
   const filled = Math.round(pct / 10);
   return '▰'.repeat(filled) + '▱'.repeat(10 - filled);
@@ -489,6 +566,61 @@ async function payloadProgress(user) {
   return { embeds: [embed] };
 }
 
+async function payloadRank(userId, username) {
+  const board = db.getLeaderboard();
+  const idx = board.findIndex((p) => p.discord_id === userId);
+  if (idx === -1) {
+    return {
+      content: `You're not on the board yet, **${username}**. Run \`!link <steamid64>\` and unlock something to climb on.`,
+    };
+  }
+  const me = board[idx];
+  let line = `🪵 **${username}** — rank **#${idx + 1}** of ${board.length} with **${me.points}** pts.`;
+  if (idx === 0) {
+    line += board.length > 1 ? ' You\'re on top of the food chain. 👑' : ' ...though you\'re the only one here.';
+  } else {
+    const above = board[idx - 1];
+    const aboveName = await displayName(above);
+    const gap = above.points - me.points;
+    line +=
+      gap === 0
+        ? ` Dead tied with **${aboveName}** — unlock something to break it.`
+        : ` **${gap}** pt${gap === 1 ? '' : 's'} behind **${aboveName}**.`;
+  }
+  return { content: line };
+}
+
+async function payloadStats(user) {
+  const player = db.getPlayer(user.id);
+  if (!player) {
+    return { content: `${user.username} isn't on the board yet — \`!link <steamid64>\` to join the hunt.` };
+  }
+  const achs = db.getAchievements(user.id);
+  const board = db.getLeaderboard();
+  const rank = board.findIndex((p) => p.discord_id === user.id) + 1;
+  const role = [...REWARDS].reverse().find((r) => player.points >= r.points);
+  const nextRole = REWARDS.find((r) => player.points < r.points);
+
+  const lines = [
+    `🪵 **Points:** ${player.points}` + (rank ? `  ·  rank **#${rank}** of ${board.length}` : ''),
+    `🏆 **Achievements tracked:** ${achs.length}`,
+    `🔥 **Streak:** ${player.current_streak || 0} day${(player.current_streak || 0) === 1 ? '' : 's'}  ·  best ${player.best_streak || 0}`,
+    `🎖️ **Rank role:** ${role ? `${role.emoji} ${role.name}` : '— none yet'}`,
+  ];
+  if (nextRole) {
+    lines.push(`🎯 **Next:** ${nextRole.emoji} ${nextRole.name} in ${nextRole.points - player.points} pts`);
+  }
+  if (!player.steam_id) {
+    lines.push('\n⚠️ No Steam linked — `!link <steamid64>` to start earning.');
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(0x8bc34a)
+    .setTitle(`📈 ${user.username}'s Survivor Card`)
+    .setDescription(lines.join('\n'));
+  return { embeds: [embed] };
+}
+
 async function payloadSurvey() {
   const question = await survivor.askGroupQuestion();
   return { content: `📋 **Survivor's question of the day:**\n${question}` };
@@ -516,7 +648,7 @@ async function actionLink(userId, username, steamId) {
   return {
     content:
       `🔗 Linked **${username}** to Steam${summary?.personaname ? ` account **${summary.personaname}**` : ''}. ` +
-      `Go unlock something — I'm watching.`,
+      `Go unlock something — I'm watching. Try \`!stats\` to see your card or \`!help\` for everything.`,
   };
 }
 
@@ -563,8 +695,19 @@ async function handleCommand(message) {
   const cmd = command.toLowerCase();
 
   switch (cmd) {
+    case '!help':
+    case '!commands':
+      await message.reply(payloadHelp(isAdmin(message.member)));
+      return true;
     case '!points':
       await message.reply(await payloadPoints(message.author.id, message.author.username));
+      return true;
+    case '!stats':
+    case '!card':
+      await message.reply(await payloadStats(message.mentions.users.first() ?? message.author));
+      return true;
+    case '!rank':
+      await message.reply(await payloadRank(message.author.id, message.author.username));
       return true;
     case '!leaderboard':
       await message.reply(await payloadLeaderboard());
@@ -611,6 +754,12 @@ async function handleCommand(message) {
       return true;
     }
     default:
+      // Friendly nudge for typo'd commands, but stay quiet in the free-chat
+      // channel where a lone "!" might just be conversation.
+      if (/^![a-z]+$/.test(cmd) && message.channel.id !== SURVIVOR_CHAT_CHANNEL_ID) {
+        await message.reply(`I don't know \`${cmd}\`. Try \`!help\` for everything I can do.`);
+        return true;
+      }
       return false;
   }
 }
@@ -619,7 +768,13 @@ async function handleCommand(message) {
 
 function buildSlashCommands() {
   return [
+    new SlashCommandBuilder().setName('help').setDescription('List every command'),
     new SlashCommandBuilder().setName('points').setDescription('Show your points'),
+    new SlashCommandBuilder()
+      .setName('stats')
+      .setDescription('Show a player\'s survivor card')
+      .addUserOption((o) => o.setName('user').setDescription('Whose card (default: you)')),
+    new SlashCommandBuilder().setName('rank').setDescription('Show your leaderboard rank'),
     new SlashCommandBuilder().setName('leaderboard').setDescription('Show the points leaderboard'),
     new SlashCommandBuilder()
       .setName('achievements')
@@ -673,8 +828,19 @@ client.on('interactionCreate', async (interaction) => {
 
   try {
     switch (name) {
+      case 'help':
+        return interaction.reply({
+          ...payloadHelp(interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)),
+          flags: MessageFlags.Ephemeral,
+        });
       case 'points':
         return interaction.reply(await payloadPoints(interaction.user.id, interaction.user.username));
+      case 'stats':
+        return interaction.reply(
+          await payloadStats(interaction.options.getUser('user') ?? interaction.user)
+        );
+      case 'rank':
+        return interaction.reply(await payloadRank(interaction.user.id, interaction.user.username));
       case 'leaderboard':
         await interaction.deferReply();
         return interaction.editReply(await payloadLeaderboard());

@@ -12,8 +12,15 @@ out reward roles at milestones, and trash-talks the whole way through as
 - **Steam achievement tracking** — polls every linked member's Steam account
   every 5 minutes for **The Forest** (`242760`) **and Sons of the Forest**
   (`1326470`).
-- **Points & rewards** — `+10` points per new achievement; a milestone
-  announcement at every 100 points.
+- **Points & rewards** — `+10` points per new achievement, plus bonuses:
+  - 🩸 **First Blood** `+15` — the first member of the group to unlock a given
+    achievement.
+  - 💎 **Rarity bonus** — `+30 / +15 / +5` for globally rare achievements
+    (≤2% / ≤10% / ≤25% of all Steam owners have it).
+  - 🔥 **Streak bonus** — `+2` per consecutive day you unlock something, capped
+    at `+20`. Miss a day and the streak resets.
+
+  A milestone announcement fires at every 100 points.
 - **Survivor's personality** — an AI castaway (Google Gemini, `gemini-2.5-flash`)
   that reacts to every unlock, celebrates milestones, holds conversations, and
   asks the group random questions.
@@ -33,11 +40,15 @@ Available as both slash commands (`/points`) and prefix commands (`!points`).
 
 | Command | What it does |
 | --- | --- |
+| `/help` | Lists every command (with a points explainer) |
+| `/stats [user]` | A survivor card: points, rank, streak, role, next reward |
+| `/rank` | Your spot on the leaderboard + who's just ahead |
 | `/leaderboard` | Shows all members ranked by points |
 | `/points` | Shows your own points |
 | `/achievements [user]` | Lists achievements you (or someone) have unlocked |
 | `/progress [user]` | Shows achievement completion % per game |
 | `/link <steamid64>` | Links your Discord account to your Steam ID |
+| `/unlink` | Removes your Steam link (keeps your points) |
 | `/survey` | Survivor asks the group a random fun question |
 | `/addpoints <user> <amount>` | **(Admin)** Add points (negative to subtract) |
 | `/setpoints <user> <amount>` | **(Admin)** Set a player's point total |

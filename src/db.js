@@ -48,6 +48,18 @@ db.exec(`
   );
 `);
 
+// ── Migrations (add columns to existing tables without losing data) ──────────
+function ensureColumn(table, column, definition) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+// Daily unlock streaks. last_unlock_day is an integer day number (UTC).
+ensureColumn('players', 'current_streak', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('players', 'best_streak', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('players', 'last_unlock_day', 'INTEGER');
+
 // ── Players ────────────────────────────────────────────────────────────────
 
 const upsertLinkStmt = db.prepare(`
@@ -173,6 +185,39 @@ const getAchievementsStmt = db.prepare(
 );
 export function getAchievements(discordId) {
   return getAchievementsStmt.all(discordId);
+}
+
+// How many distinct players have ever recorded a given achievement. Used to
+// detect "First Blood" — the first member of the group to unlock something.
+const achievementOwnerCountStmt = db.prepare(
+  'SELECT COUNT(DISTINCT discord_id) AS n FROM achievements WHERE game_id = ? AND apiname = ?'
+);
+export function achievementOwnerCount(gameId, apiname) {
+  return achievementOwnerCountStmt.get(gameId, apiname).n;
+}
+
+// ── Streaks ──────────────────────────────────────────────────────────────────
+
+const updateStreakStmt = db.prepare(
+  'UPDATE players SET current_streak = ?, best_streak = ?, last_unlock_day = ? WHERE discord_id = ?'
+);
+/**
+ * Record that a player unlocked something on integer day `day` (UTC day number)
+ * and update their streak. Returns { current, best, extended } where `extended`
+ * is true only when this unlock pushed an existing streak to a new day.
+ */
+export function recordUnlockDay(discordId, day) {
+  const p = getPlayer(discordId);
+  const prevBest = p.best_streak || 0;
+  const last = p.last_unlock_day;
+
+  if (last === day) {
+    return { current: p.current_streak || 0, best: prevBest, extended: false };
+  }
+  const current = last === day - 1 ? (p.current_streak || 0) + 1 : 1;
+  const best = Math.max(prevBest, current);
+  updateStreakStmt.run(current, best, day, discordId);
+  return { current, best, extended: last === day - 1 };
 }
 
 // Points-earning achievements unlocked since a timestamp, grouped by player.

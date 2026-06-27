@@ -23,3 +23,18 @@ export function milestonesCrossed(oldPoints, newPoints) {
 export function rewardForPoints(points) {
   return REWARDS.find((r) => r.points === points) ?? null;
 }
+
+// ── Rarity bonuses ───────────────────────────────────────────────────────────
+// Steam exposes the global % of owners who have each achievement. The rarer the
+// unlock, the bigger the bonus. Tiers are checked in order (lowest % first).
+export const RARITY_TIERS = [
+  { maxPct: 2, bonus: 30, label: 'Mythic', emoji: '💎' },
+  { maxPct: 10, bonus: 15, label: 'Rare', emoji: '🟣' },
+  { maxPct: 25, bonus: 5, label: 'Uncommon', emoji: '🔵' },
+];
+
+/** The rarity tier for a global ownership %, or null if common / unknown. */
+export function rarityTier(pct) {
+  if (pct == null || Number.isNaN(pct)) return null;
+  return RARITY_TIERS.find((t) => pct <= t.maxPct) ?? null;
+}
