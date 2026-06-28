@@ -41,13 +41,13 @@ Available as both slash commands (`/points`) and prefix commands (`!points`).
 | Command | What it does |
 | --- | --- |
 | `/help` | Lists every command (with a points explainer) |
-| `/stats [user]` | A survivor card: points, rank, streak, role, next reward |
+| `/stats [user]` | A survivor card (with the player's Steam avatar): points, rank, streak, role, next reward |
 | `/rank` | Your spot on the leaderboard + who's just ahead |
 | `/leaderboard` | Shows all members ranked by points |
 | `/points` | Shows your own points |
 | `/achievements [user]` | Lists achievements you (or someone) have unlocked |
 | `/progress [user]` | Shows achievement completion % per game |
-| `/link <steamid64>` | Links your Discord account to your Steam ID |
+| `/link <steamid64>` | Links your Steam ID (rejected with instructions if your profile is private) |
 | `/unlink` | Removes your Steam link (keeps your points) |
 | `/survey` | Survivor asks the group a random fun question |
 | `/addpoints <user> <amount>` | **(Admin)** Add points (negative to subtract) |
@@ -62,15 +62,22 @@ Available as both slash commands (`/points`) and prefix commands (`!points`).
 
 ### Talking to Survivor
 
-Survivor talks in **exactly one channel** — the one you set as
+Survivor talks in **exactly one server channel** — the one you set as
 `SURVIVOR_CHAT_CHANNEL_ID`. In that channel he replies to **every** message and
 holds a real back-and-forth conversation. Because each message is tagged with the
 speaker's name, the whole group can talk to him at once and he answers each
 person specifically. A per-user **cooldown** (`CHAT_COOLDOWN_MS`) keeps it from
 spamming the Gemini API.
 
-He stays **completely silent in every other channel and in DMs**. (The commands
-still work anywhere.)
+He also chats **one-on-one in DMs**, but only with **linked players** and only
+about **video games** — DM him anything off-topic and he'll deflect it in
+character. (Unlinked users just get nudged to `!link` first.) He stays silent in
+every *other* server channel, though commands work anywhere.
+
+**Personality:** he's a sarcastic, hard-to-get gamer — short and sharp for
+casual banter, but he drops the act and gives a real, detailed answer when you
+actually ask for a guide, boss strategy, build, or game recommendation (any
+game, not just The Forest).
 
 Conversation memory is **persisted to the database**, so he remembers the recent
 chat even across restarts/redeploys.
@@ -277,6 +284,9 @@ re-baselines achievements. To back up the data at any time, run the admin
 
 ## Troubleshooting
 
+- **`!link` says my profile is private** — that's by design: the bot won't link
+  a profile it can't read. Set **My profile** and **Game details** to Public
+  (Steam → Edit Profile → Privacy), then run `!link <steamid64>` again.
 - **No achievement announcements** — confirm the member's Steam profile and
   *game details* are public, that their SteamID64 is correct (`!link`), and that
   they actually own The Forest on that account.

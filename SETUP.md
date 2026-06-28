@@ -181,8 +181,11 @@ This is per-person. Each player does this on **their own** Steam account:
    essential.
 5. Save.
 
-> If a member's profile or game details are private, the bot simply can't read
-> their achievements and will skip them — no error, just no points for them.
+> If a member's profile or game details are private, the bot can't read their
+> achievements. When they try `!link`, it **refuses and tells them to make the
+> profile public**, then re-run `!link` — so nothing gets linked until it's
+> actually readable. (Pre-seeded `STEAM_IDS` aren't checked this way, so make
+> sure those profiles are public too.)
 
 ### 5c. Collect each member's SteamID64
 For each of the 5 players:
