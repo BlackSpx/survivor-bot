@@ -260,6 +260,26 @@ export function trimChat(channelId, keep) {
   trimChatStmt.run(channelId, channelId, keep);
 }
 
+// ── Backup / export ──────────────────────────────────────────────────────────
+
+// WAL-safe online backup: produces a consistent copy even while the bot writes.
+// Returns a Promise (better-sqlite3's backup is async).
+export function backupDatabase(destPath) {
+  return db.backup(destPath);
+}
+
+// Flat snapshot of every player — the human-readable data you'd need to rebuild
+// points/links by hand if the .db file itself were ever lost or corrupted.
+const exportPlayersStmt = db.prepare(`
+  SELECT discord_id, steam_id, steam_name, points,
+         current_streak, best_streak, last_milestone
+  FROM players
+  ORDER BY points DESC, discord_id ASC
+`);
+export function exportPlayers() {
+  return exportPlayersStmt.all();
+}
+
 // ── Meta (key/value bot state) ───────────────────────────────────────────────
 
 const getMetaStmt = db.prepare('SELECT value FROM meta WHERE key = ?');

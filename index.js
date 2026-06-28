@@ -3,6 +3,9 @@
 // assigns reward roles, chats in a locked channel, and more.
 
 import 'dotenv/config';
+import os from 'node:os';
+import path from 'node:path';
+import fs from 'node:fs';
 import {
   Client,
   GatewayIntentBits,
@@ -11,6 +14,7 @@ import {
   SlashCommandBuilder,
   PermissionFlagsBits,
   MessageFlags,
+  AttachmentBuilder,
 } from 'discord.js';
 
 import * as db from './src/db.js';
@@ -33,7 +37,17 @@ const {
   BACKFILL_EXISTING = 'false',
   OWNER_DISCORD_ID = '',
   OWNER_PING = 'false',
+  ADMIN_DISCORD_IDS = '',
 } = process.env;
+
+// Who may run admin commands (!backup, !addpoints, !setpoints). If ADMIN_DISCORD_IDS
+// (or OWNER_DISCORD_ID) is set, ONLY those exact Discord user IDs qualify — server
+// "Administrator" permission no longer counts. If neither is set, we fall back to
+// the Administrator permission so the bot isn't accidentally locked before setup.
+const ADMIN_IDS = (ADMIN_DISCORD_IDS || OWNER_DISCORD_ID || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 const POINTS_PER_ACHIEVEMENT = 10;
 const FIRST_BLOOD_BONUS = 15; // first in the group to unlock an achievement
@@ -487,7 +501,8 @@ function payloadHelp(isAdminUser = false) {
       '',
       '**🔒 Admin only**',
       '`!addpoints @user <n>` — add points (negative to subtract)',
-      '`!setpoints @user <n>` — set a point total'
+      '`!setpoints @user <n>` — set a point total',
+      '`!backup` — DM yourself a full database backup (+ readable CSV)'
     );
   }
   return { content: lines.join('\n') };
@@ -692,9 +707,67 @@ async function actionAdjustPoints({ targetId, targetName, mode, amount }) {
   return { content: `✅ **${targetName}**'s points ${verb} **${after}**.` };
 }
 
+function csvCell(value) {
+  const s = String(value ?? '');
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+/**
+ * Build a WAL-safe full DB backup plus a readable CSV of every player, and DM
+ * both files to the requesting admin. The .db restores everything exactly; the
+ * CSV is the emergency fallback (points/streaks/links per Steam ID) in case the
+ * binary file is ever lost or corrupted. Returns a channel-safe status payload.
+ */
+async function actionBackup(user) {
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+  const tmpDb = path.join(os.tmpdir(), `survivor-backup-${stamp}.db`);
+  try {
+    await db.backupDatabase(tmpDb);
+
+    const players = db.exportPlayers();
+    const header = 'discord_id,steam_id,steam_name,points,current_streak,best_streak,last_milestone';
+    const rows = players.map((p) =>
+      [p.discord_id, p.steam_id, p.steam_name, p.points, p.current_streak, p.best_streak, p.last_milestone]
+        .map(csvCell)
+        .join(',')
+    );
+    const csv = [header, ...rows].join('\n');
+
+    const files = [
+      new AttachmentBuilder(tmpDb, { name: `survivor-${stamp}.db` }),
+      new AttachmentBuilder(Buffer.from(csv, 'utf8'), { name: `survivor-points-${stamp}.csv` }),
+    ];
+
+    try {
+      await user.send({
+        content:
+          `🗄️ **Backup** — ${players.length} player${players.length === 1 ? '' : 's'}.\n` +
+          `• \`.db\` — full restore (replace the volume's database file).\n` +
+          `• \`.csv\` — readable points/links per Steam ID, for emergency manual rebuild.\n` +
+          `Stash these somewhere off Railway.`,
+        files,
+      });
+    } catch {
+      return {
+        content:
+          "I couldn't DM you the backup — open your DMs (so I can message you) and run it again.",
+      };
+    }
+    return { content: '📬 Sent the backup to your DMs.' };
+  } catch (err) {
+    console.error(`[backup] failed: ${err.message}`);
+    return { content: `💀 Backup failed: ${err.message}` };
+  } finally {
+    fs.rm(tmpDb, { force: true }, () => {});
+  }
+}
+
 // ── Prefix (!) commands ──────────────────────────────────────────────────────
 
-function isAdmin(member) {
+// True if `userId` may run admin commands. When ADMIN_IDS is configured, only
+// those IDs pass; otherwise fall back to Discord's Administrator permission.
+function isAdmin(userId, member) {
+  if (ADMIN_IDS.length) return ADMIN_IDS.includes(userId);
   return !!member?.permissions?.has(PermissionFlagsBits.Administrator);
 }
 
@@ -705,7 +778,7 @@ async function handleCommand(message) {
   switch (cmd) {
     case '!help':
     case '!commands':
-      await message.reply(payloadHelp(isAdmin(message.member)));
+      await message.reply(payloadHelp(isAdmin(message.author.id, message.member)));
       return true;
     case '!points':
       await message.reply(await payloadPoints(message.author.id, message.author.username));
@@ -737,9 +810,17 @@ async function handleCommand(message) {
       await message.channel.send(p.content);
       return true;
     }
+    case '!backup': {
+      if (!isAdmin(message.author.id, message.member)) {
+        await message.reply('🔒 That command is admin-only.');
+        return true;
+      }
+      await message.reply(await actionBackup(message.author));
+      return true;
+    }
     case '!addpoints':
     case '!setpoints': {
-      if (!isAdmin(message.member)) {
+      if (!isAdmin(message.author.id, message.member)) {
         await message.reply('🔒 That command is admin-only.');
         return true;
       }
@@ -812,6 +893,10 @@ function buildSlashCommands() {
       .addUserOption((o) => o.setName('user').setDescription('Player').setRequired(true))
       .addIntegerOption((o) => o.setName('amount').setDescription('New point total').setRequired(true))
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+      .setName('backup')
+      .setDescription('(Admin) DM yourself a full database backup')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   ].map((c) => c.toJSON());
 }
 
@@ -838,7 +923,7 @@ client.on('interactionCreate', async (interaction) => {
     switch (name) {
       case 'help':
         return interaction.reply({
-          ...payloadHelp(interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)),
+          ...payloadHelp(isAdmin(interaction.user.id, interaction.member)),
           flags: MessageFlags.Ephemeral,
         });
       case 'points':
@@ -876,7 +961,7 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.editReply(await payloadSurvey());
       case 'addpoints':
       case 'setpoints': {
-        if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+        if (!isAdmin(interaction.user.id, interaction.member)) {
           return interaction.reply({ content: '🔒 Admin-only.', flags: MessageFlags.Ephemeral });
         }
         await interaction.deferReply();
@@ -891,6 +976,13 @@ client.on('interactionCreate', async (interaction) => {
             amount,
           })
         );
+      }
+      case 'backup': {
+        if (!isAdmin(interaction.user.id, interaction.member)) {
+          return interaction.reply({ content: '🔒 Admin-only.', flags: MessageFlags.Ephemeral });
+        }
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        return interaction.editReply(await actionBackup(interaction.user));
       }
       default:
         return;
