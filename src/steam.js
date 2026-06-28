@@ -1,6 +1,7 @@
 // Thin wrapper around the Steam Web API.
 
 import * as health from './health.js';
+import { TRACKED_APP_IDS } from './games.js';
 
 const API_KEY = process.env.STEAM_API_KEY;
 
@@ -80,6 +81,47 @@ export async function getGlobalAchievementPct(appId) {
     health.reportError('Steam', err.message);
     return cached?.map ?? null;
   }
+}
+
+/**
+ * Probe whether we can actually read this player's achievements — used at link
+ * time to warn about private profiles. Returns:
+ *   'ok'      — achievements are readable on at least one tracked game.
+ *   'private' — a tracked game reported a privacy block (profile or game-details
+ *               privacy is hiding the data).
+ *   'unknown' — couldn't read anything, but it looks like they just don't own
+ *               the tracked games (or a transient hiccup) — don't nag about it.
+ */
+export async function probeAchievementAccess(steamId) {
+  let sawPrivate = false;
+  for (const appId of TRACKED_APP_IDS) {
+    const url =
+      `https://api.steampowered.com/ISteamUserStats/GetPlayerAchievements/v1/` +
+      `?appid=${appId}&key=${API_KEY}&steamid=${steamId}&l=english`;
+    let res;
+    try {
+      res = await fetch(url);
+    } catch {
+      return 'unknown'; // network blip — don't accuse them of being private
+    }
+    if (res.status === 403) {
+      sawPrivate = true;
+      continue;
+    }
+    if (!res.ok) continue;
+    let data;
+    try {
+      data = await res.json();
+    } catch {
+      continue;
+    }
+    const stats = data?.playerstats;
+    if (stats?.success && Array.isArray(stats.achievements)) return 'ok';
+    // "Profile is not public" = privacy; "Requested app has no stats" = not owned.
+    const err = String(stats?.error || '').toLowerCase();
+    if (err.includes('not public') || err.includes('private')) sawPrivate = true;
+  }
+  return sawPrivate ? 'private' : 'unknown';
 }
 
 /**

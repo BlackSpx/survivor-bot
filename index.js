@@ -18,7 +18,12 @@ import {
 } from 'discord.js';
 
 import * as db from './src/db.js';
-import { getPlayerAchievements, getPlayerSummary, getGlobalAchievementPct } from './src/steam.js';
+import {
+  getPlayerAchievements,
+  getPlayerSummary,
+  getGlobalAchievementPct,
+  probeAchievementAccess,
+} from './src/steam.js';
 import * as survivor from './src/survivor.js';
 import * as health from './src/health.js';
 import { REWARDS, milestonesCrossed, rewardForPoints, rarityTier } from './src/rewards.js';
@@ -658,6 +663,14 @@ async function payloadSurvey() {
   return { content: `📋 **Survivor's question of the day:**\n${question}` };
 }
 
+// Steam privacy fix — shown when we link someone but can't read their unlocks.
+const STEAM_PRIVACY_STEPS = [
+  '**1.** Steam → your name (top-right) → **Profile** → **Edit Profile**',
+  '**2.** **Privacy Settings**',
+  '**3.** Set **My profile** → Public, and **Game details** → Public',
+  '**4.** **Save** (Game details is the one that hides achievements).',
+].join('\n');
+
 async function actionLink(userId, username, steamId) {
   if (!steamId || !/^\d{17}$/.test(steamId)) {
     return {
@@ -674,12 +687,25 @@ async function actionLink(userId, username, steamId) {
         `have them unlink first. (One Discord = one Steam.)`,
     };
   }
+  // Don't save a link we can't actually read. A private profile would link fine
+  // but silently earn nothing — so refuse, explain the fix, and let them re-run
+  // !link once it's public.
+  if ((await probeAchievementAccess(steamId)) === 'private') {
+    return {
+      content:
+        `🙈 Couldn't link **${username}** — your Steam profile is **private**, so I ` +
+        `can't see your achievements. Fix that, then run \`!link ${steamId}\` again:\n\n` +
+        STEAM_PRIVACY_STEPS,
+    };
+  }
+
   db.linkPlayer(userId, steamId);
   const summary = await getPlayerSummary(steamId);
   if (summary?.personaname) db.setSteamName(userId, summary.personaname);
+  const named = summary?.personaname ? ` account **${summary.personaname}**` : '';
   return {
     content:
-      `🔗 Linked **${username}** to Steam${summary?.personaname ? ` account **${summary.personaname}**` : ''}. ` +
+      `🔗 Linked **${username}** to Steam${named}. ` +
       `Go unlock something — I'm watching. Try \`!stats\` to see your card or \`!help\` for everything.`,
   };
 }
