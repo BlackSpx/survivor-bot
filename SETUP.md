@@ -172,7 +172,7 @@ first, chats in the second).
 4. Copy the **Key**.
    - 👉 This is your **`STEAM_API_KEY`**. Save it.
 
-### 5b. Each of the 5 members must make their profile public
+### 5b. Each member must make their profile public
 This is per-person. Each player does this on **their own** Steam account:
 1. Steam → click your name (top right) → **Profile** → **Edit Profile**.
 2. **Privacy Settings**.
@@ -188,7 +188,7 @@ This is per-person. Each player does this on **their own** Steam account:
 > sure those profiles are public too.)
 
 ### 5c. Collect each member's SteamID64
-For each of the 5 players:
+For each player:
 1. Go to <https://steamid.io/>.
 2. Paste their Steam profile URL (or vanity name) → **lookup**.
 3. Copy the **steamID64** value — it's a **17-digit number** like
@@ -206,7 +206,7 @@ run `!link <their steamid64>` in Discord after the bot is online. Either works.
 3. Copy the key.
    - 👉 This is your **`GEMINI_API_KEY`**. Save it.
 
-> The free tier is more than enough for a 5-person bot.
+> The free tier is more than enough for a small friend group.
 
 ---
 

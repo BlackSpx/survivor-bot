@@ -235,7 +235,7 @@ You should see `✅ Survivor is awake as <BotName>` and
 ## Hosting free on Railway.app
 
 [Railway](https://railway.app) runs the bot 24/7 so it keeps polling even when
-your computer is off. The free trial / hobby tier is plenty for a 5-person bot.
+your computer is off. The free trial / hobby tier is plenty for a small friend group.
 
 1. Push this project to a **GitHub repo** (the included `.gitignore` keeps
    `.env`, `node_modules/`, and the `*.db` files out — never commit secrets).
