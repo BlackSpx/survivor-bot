@@ -83,8 +83,9 @@ export async function getGlobalAchievementPct(appId) {
 }
 
 /**
- * Fetch a player's profile summary: display name + the App ID they're currently
- * in-game on (if any). Returns { personaname, gameId } or null on failure.
+ * Fetch a player's profile summary: display name, avatar, profile URL, and the
+ * App ID they're currently in-game on (if any).
+ * Returns { personaname, gameId, avatar, profileUrl } or null on failure.
  */
 export async function getPlayerSummary(steamId) {
   const url =
@@ -104,6 +105,8 @@ export async function getPlayerSummary(steamId) {
     return {
       personaname: player.personaname ?? null,
       gameId: player.gameid ?? null, // present only while in-game
+      avatar: player.avatarfull ?? null, // 184x184 profile picture
+      profileUrl: player.profileurl ?? null,
     };
   } catch (err) {
     health.reportError('Steam', err.message);

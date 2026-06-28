@@ -641,6 +641,15 @@ async function payloadStats(user) {
     .setColor(0x8bc34a)
     .setTitle(`📈 ${user.username}'s Survivor Card`)
     .setDescription(lines.join('\n'));
+
+  // Dress the card with the player's Steam profile picture (and link the title
+  // to their Steam profile). Best-effort — skip silently if Steam is unreachable
+  // or the profile is private.
+  if (player.steam_id) {
+    const summary = await getPlayerSummary(player.steam_id);
+    if (summary?.avatar) embed.setThumbnail(summary.avatar);
+    if (summary?.profileUrl) embed.setURL(summary.profileUrl);
+  }
   return { embeds: [embed] };
 }
 
@@ -929,7 +938,8 @@ client.on('interactionCreate', async (interaction) => {
       case 'points':
         return interaction.reply(await payloadPoints(interaction.user.id, interaction.user.username));
       case 'stats':
-        return interaction.reply(
+        await interaction.deferReply();
+        return interaction.editReply(
           await payloadStats(interaction.options.getUser('user') ?? interaction.user)
         );
       case 'rank':
