@@ -52,10 +52,13 @@ Available as both slash commands (`/points`) and prefix commands (`!points`).
 | `/survey` | Survivor asks the group a random fun question |
 | `/addpoints <user> <amount>` | **(Admin)** Add points (negative to subtract) |
 | `/setpoints <user> <amount>` | **(Admin)** Set a player's point total |
+| `/backup` | **(Admin)** DM yourself a full DB backup + a readable CSV of every player |
 
 > Slash commands require inviting the bot with the **`applications.commands`**
-> scope (see `SETUP.md` Part 2d). Admin commands are restricted to members with
-> the **Administrator** permission.
+> scope (see `SETUP.md` Part 2d). Admin commands are restricted to the Discord
+> user IDs listed in **`ADMIN_DISCORD_IDS`** (falling back to `OWNER_DISCORD_ID`);
+> if neither is set, they fall back to members with the **Administrator**
+> permission. The admin section of `/help` is hidden from everyone else.
 
 ### Talking to Survivor
 
@@ -74,11 +77,35 @@ chat even across restarts/redeploys.
 
 ### Telling Survivor who his owner is
 
-Set `OWNER_NAME`, `OWNER_DISCORD_ID`, and/or `OWNER_STEAM` in `.env` and Survivor
-will answer (in character) when someone asks **"who owns the bot?"** — naming you
-and, if you gave a Discord ID, linking you with a clickable mention. He keeps it
-to himself unless asked. By default the mention **won't ping** you; set
-`OWNER_PING=true` if you want the notification. Leave these blank to disable.
+When someone asks Survivor **"who owns / made / runs this bot?"** (even in DMs),
+he answers in character — naming you and pointing people at whichever of your
+profiles you've shared. He **never volunteers it unless asked.**
+
+Set any combination of these in `.env` (or your Railway Variables). All are
+optional — fill in only what you want public:
+
+```env
+# Your display name — Survivor calls you this.
+OWNER_NAME=Greg
+# Your Discord user ID — shown as a clickable @mention.
+# (Developer Mode on → right-click yourself → Copy User ID)
+OWNER_DISCORD_ID=111111111111111111
+# Your Steam — a profile URL or just a handle, shown as plain text.
+OWNER_STEAM=https://steamcommunity.com/id/yourvanity
+# "true" to actually ping you when Survivor names you. Default false
+# (the mention still links, it just won't notify you every time).
+OWNER_PING=false
+```
+
+| Field | What people see when they ask |
+| --- | --- |
+| `OWNER_NAME` | Your name in Survivor's reply |
+| `OWNER_DISCORD_ID` | A clickable Discord mention linking to you |
+| `OWNER_STEAM` | Your Steam profile URL / handle as plain text |
+
+Leave all three blank to disable the feature entirely (Survivor just won't claim
+an owner). Note `OWNER_DISCORD_ID` is also reused as the admin fallback — see
+[Admin commands](#commands) and `ADMIN_DISCORD_IDS` in `.env.example`.
 
 ### What about achievements members already have?
 
@@ -220,11 +247,15 @@ The bot stores points in `survivor.db` on local disk. On Railway, the filesystem
 is **wiped on every redeploy** unless you attach a volume:
 
 1. Service → **Settings → Volumes → New Volume**.
-2. Mount it at `/app` (Railway's default app directory) or another path, and the
-   SQLite file will persist across deploys.
+2. Mount it at **`/data`** (use a dedicated path, *not* `/app` — that would
+   overlay your deployed code).
+3. Add a Variable **`DATABASE_PATH=/data/survivor.db`** so the bot writes the
+   database onto the volume instead of the ephemeral disk.
+4. Redeploy. Points and achievements now persist across deploys.
 
 Without a volume the bot still works, but a redeploy resets everyone's points and
-re-baselines achievements.
+re-baselines achievements. To back up the data at any time, run the admin
+`!backup` command — Survivor DMs you the full `.db` plus a readable CSV.
 
 ---
 

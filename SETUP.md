@@ -247,6 +247,15 @@ run `!link <their steamid64>` in Discord after the bot is online. Either works.
      achievements, etc.) have their own settings at the bottom of
      `.env.example`, each with a comment explaining it. They're all off by
      default — turn on the ones you want.
+   - **Optional — tell Survivor who owns him.** Fill in any of `OWNER_NAME`,
+     `OWNER_DISCORD_ID` (right-click yourself → Copy User ID), and `OWNER_STEAM`
+     (a profile URL or handle). When set, Survivor names you — in character —
+     only when someone actually asks "who owns/made this bot?". Leave blank to
+     disable. See the README's *"Telling Survivor who his owner is"* section.
+   - **Optional — lock admin commands to you.** Set `ADMIN_DISCORD_IDS` to your
+     Discord user ID (comma-separate for multiple) so only you can run
+     `!backup`, `!addpoints`, and `!setpoints`. Leave blank and any server
+     Administrator can use them.
 
 4. Install the bot's dependencies (only needed once):
    ```bash
@@ -317,8 +326,14 @@ bot online all the time.
 Railway wipes the local disk on every redeploy, which would reset everyone's
 points. To prevent that:
 1. Service → **Settings → Volumes → New Volume**.
-2. Mount it at `/app`.
-3. Now `survivor.db` persists across deploys.
+2. Mount it at **`/data`** (a dedicated path — don't use `/app`, that would
+   overlay the bot's code).
+3. Add a Variable **`DATABASE_PATH=/data/survivor.db`** so the database is
+   written onto the volume.
+4. Redeploy. Now `survivor.db` persists across deploys.
+
+> 💾 To grab a backup anytime, run `!backup` (admin only) — Survivor DMs you the
+> full database file plus a readable CSV of everyone's points.
 
 Done — the bot now runs 24/7 and survives restarts.
 
