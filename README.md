@@ -28,8 +28,13 @@ out reward roles at milestones, and trash-talks the whole way through as
 - **Automatic reward roles** at 100 / 200 / 300 / 500 points.
 - **SQLite storage** — points, achievements, and chat memory persist in
   `survivor.db`.
+- **Voice activity** (optional) — tracks time linked players spend in your game
+  voice channel and awards bonus points at hour milestones (Voice Newbie →
+  Voice Legend). Can also DM + kick unlinked users who join.
 - **Optional extras** (all off by default — see `.env.example`):
   - **Now-playing pings** — a line when someone boots up a tracked game.
+  - **All-games tracking** — count achievements from *any* recently-played game,
+    not just the two Forest games (`TRACK_ALL_GAMES`).
   - **Weekly recap** — a ~weekly post of who earned the most.
   - **Backfill** — count members' *existing* achievements on first run.
   - **Health alerts** — get pinged if Steam or Gemini starts failing.
@@ -69,11 +74,13 @@ Survivor talks in **exactly one server channel** — the one you set as
 `SURVIVOR_CHAT_CHANNEL_ID`. In that channel he replies to **every** message and
 holds a real back-and-forth conversation. Because each message is tagged with the
 speaker's name, the whole group can talk to him at once and he answers each
-person specifically. Two layers keep it from spamming: a per-user **cooldown**
-(`CHAT_COOLDOWN_MS`) throttles back-to-back replies, and a rolling **budget of 5
-messages per user per hour** caps the volume — once a user is over budget their
-extra messages are deleted with a quick heads-up. (Both need the bot to have
-**Manage Messages** in that channel to delete.)
+person specifically. **Only linked players may talk here** — an unlinked user's
+message is deleted with a nudge to `!link` first. Two more layers keep it from
+spamming: a per-user **cooldown** (`CHAT_COOLDOWN_MS`) throttles back-to-back
+replies, and a rolling **budget of 5 messages per user per hour** caps the volume
+— once a user is over budget their extra messages are deleted with a quick
+heads-up. (All deletion needs the bot to have **Manage Messages** in that
+channel.)
 
 He also chats **one-on-one in DMs**, but only with **linked players** and only
 about **video games** — DM him anything off-topic and he'll deflect it in
@@ -152,6 +159,38 @@ The first time the bot sees a player it has two modes, controlled by
 > Milestones at 400, 600, 700… still get a celebration announcement, just no
 > dedicated role.
 
+### Voice activity (optional)
+
+Set **`GAME_VOICE_CHANNEL_ID`** to the voice channel your group games in and the
+bot tracks how long each **linked** player spends in it. Crossing a cumulative
+**hour milestone** awards bonus points (which feed the normal totals/roles) and
+posts a newbie→veteran announcement in the achievement channel:
+
+| Voice hours | Rank | Bonus points |
+| --- | --- | --- |
+| 1h | 🎙️ Voice Newbie | +20 |
+| 5h | 🗣️ Voice Regular | +40 |
+| 10h | 🔥 Voice Veteran | +75 |
+| 25h | 👑 Voice Legend | +150 |
+
+Set **`VOICE_KICK_UNLINKED=true`** to also DM anyone who joins the channel without
+a linked Steam and disconnect them after `VOICE_LINK_GRACE_SECONDS` (default 120)
+if they still haven't linked. This needs the bot to have the **Move Members**
+permission on that channel; it also requires the **`GuildVoiceStates`** intent,
+which is already enabled in code.
+
+> Voice time is only credited to **linked** players. Unlinked users are never
+> awarded points (they're just optionally kicked).
+
+### Counting other games (optional)
+
+By default only **The Forest** and **Sons of the Forest** earn points. Set
+**`TRACK_ALL_GAMES=true`** and the bot also checks each player's *recently-played*
+games every poll and awards points for new unlocks in **any** of them (announced
+with the game's name). The first time a new game is seen for a player its existing
+achievements are **baselined silently** — so enabling this never dumps a whole
+back-catalogue in as points; only unlocks earned afterward count.
+
 ---
 
 ## Prerequisites
@@ -171,8 +210,10 @@ The first time the bot sees a player it has two modes, controlled by
 3. Under **Privileged Gateway Intents**, enable **MESSAGE CONTENT INTENT** and
    **SERVER MEMBERS INTENT** (both are required).
 4. **OAuth2 → URL Generator**: scope `bot`, permissions
-   **Send Messages**, **Read Message History**, **Manage Roles**. Open the
-   generated URL to invite the bot to your server.
+   **Send Messages**, **Read Message History**, **Manage Roles**,
+   **Manage Messages** (to clean the achievements/chat channels), and — if you
+   use the game voice channel — **Move Members** (to kick unlinked joiners). Open
+   the generated URL to invite the bot to your server.
 
 ### Achievement channel ID
 1. Discord → **User Settings → Advanced → Developer Mode** (on).
@@ -276,6 +317,33 @@ is **wiped on every redeploy** unless you attach a volume:
 Without a volume the bot still works, but a redeploy resets everyone's points and
 re-baselines achievements. To back up the data at any time, run the admin
 `!backup` command — Survivor DMs you the full `.db` plus a readable CSV.
+
+### Backing up & restoring the data
+
+`!backup` (admin-only) DMs you two files:
+
+- **`survivor-<timestamp>.db`** — a complete, self-contained SQLite snapshot
+  (taken WAL-safe with SQLite's online backup, so it's consistent even while the
+  bot is running). This is the full restore.
+- **`survivor-points-<timestamp>.csv`** — a human-readable table of every player
+  (Discord ID, Steam ID, name, points, streaks, voice seconds). This is the
+  emergency fallback for rebuilding by hand if the `.db` is ever lost.
+
+**To restore / continue the data on a rebuild or a fresh bot:**
+
+1. Stop the bot.
+2. Put the backed-up `.db` file where the bot reads its database — i.e. at the
+   path in **`DATABASE_PATH`** (e.g. `/data/survivor.db` on Railway), or at
+   `./survivor.db` locally if `DATABASE_PATH` is unset. Rename it to match.
+3. Delete any stale `*.db-wal` / `*.db-shm` sidecar files next to it (the backup
+   is already a single consolidated file).
+4. Start the bot. Everyone's points, links, streaks, and voice hours pick up
+   exactly where the backup left off, and the schema auto-migrates if the new
+   build added columns.
+
+> Because the `.db` is a normal SQLite file, you can also open it with any SQLite
+> viewer to inspect or hand-edit it. Keep backups somewhere off your host so they
+> survive even if the host disappears.
 
 ---
 

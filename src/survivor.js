@@ -173,6 +173,14 @@ export function commentNowPlaying(playerName, gameName) {
   );
 }
 
+/** A short line when a player hits a cumulative voice-channel time milestone. */
+export function commentVoiceMilestone(playerName, hours, rankLabel) {
+  return ask(
+    `${playerName} has now spent ${hours} hours hanging out in the game voice channel and earned the rank "${rankLabel}". Give one short, funny line roasting or saluting how much time they've sunk into voice chat.`,
+    `${hours} hours of voice chat, ${playerName}? Touch some grass — or at least some in-game grass. Enjoy "${rankLabel}".`
+  );
+}
+
 /** A short intro line for the weekly recap post. */
 export function weeklyRecapIntro(topName) {
   return ask(

@@ -8,6 +8,15 @@ export const GAMES = {
 
 export const TRACKED_APP_IDS = Object.keys(GAMES);
 
+// Names learned at runtime for games NOT in GAMES — populated from Steam's
+// "recently played" data when TRACK_ALL_GAMES is on, so announcements for other
+// games read with a real title instead of a bare App ID.
+const dynamicNames = new Map();
+
+export function rememberGameName(appId, name) {
+  if (appId != null && name) dynamicNames.set(String(appId), name);
+}
+
 export function gameName(appId) {
-  return GAMES[appId]?.name ?? `App ${appId}`;
+  return GAMES[appId]?.name ?? dynamicNames.get(String(appId)) ?? `App ${appId}`;
 }

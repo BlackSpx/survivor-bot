@@ -70,6 +70,8 @@ function ensureColumn(table, column, definition) {
 ensureColumn('players', 'current_streak', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('players', 'best_streak', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('players', 'last_unlock_day', 'INTEGER');
+// Cumulative seconds spent in the tracked game voice channel.
+ensureColumn('players', 'voice_seconds', 'INTEGER NOT NULL DEFAULT 0');
 
 // ── Players ────────────────────────────────────────────────────────────────
 
@@ -207,6 +209,32 @@ export function achievementOwnerCount(gameId, apiname) {
   return achievementOwnerCountStmt.get(gameId, apiname).n;
 }
 
+// Whether we've ever recorded ANY achievement for this player+game. Used to
+// baseline a newly-seen game silently the first time (so enabling other-game
+// tracking doesn't dump a player's whole back-catalogue in as fresh unlocks).
+const gameSeenStmt = db.prepare(
+  'SELECT 1 FROM achievements WHERE discord_id = ? AND game_id = ? LIMIT 1'
+);
+export function gameSeenForPlayer(discordId, gameId) {
+  return !!gameSeenStmt.get(discordId, gameId);
+}
+
+// ── Voice activity ───────────────────────────────────────────────────────────
+
+const addVoiceSecondsStmt = db.prepare(
+  'UPDATE players SET voice_seconds = voice_seconds + ? WHERE discord_id = ?'
+);
+/** Add to a player's cumulative voice seconds; returns the new total. */
+export function addVoiceSeconds(discordId, seconds) {
+  ensurePlayer(discordId);
+  addVoiceSecondsStmt.run(Math.max(0, Math.round(seconds)), discordId);
+  return getPlayer(discordId).voice_seconds;
+}
+
+export function getVoiceSeconds(discordId) {
+  return getPlayer(discordId)?.voice_seconds ?? 0;
+}
+
 // ── Streaks ──────────────────────────────────────────────────────────────────
 
 const updateStreakStmt = db.prepare(
@@ -283,7 +311,7 @@ export function backupDatabase(destPath) {
 // points/links by hand if the .db file itself were ever lost or corrupted.
 const exportPlayersStmt = db.prepare(`
   SELECT discord_id, steam_id, steam_name, points,
-         current_streak, best_streak, last_milestone
+         current_streak, best_streak, last_milestone, voice_seconds
   FROM players
   ORDER BY points DESC, discord_id ASC
 `);

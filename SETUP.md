@@ -88,6 +88,8 @@ commands or assign roles.)
    - ✅ **Manage Roles**
    - ✅ **Manage Messages**  ← needed to keep the achievements channel
      commands-only and to enforce the chat channel's per-user message budget
+   - ✅ **Move Members**  ← only if you'll use the game voice channel with
+     `VOICE_KICK_UNLINKED=true` (lets the bot disconnect unlinked joiners)
 4. Scroll down, copy the **Generated URL** at the bottom.
 5. Paste that URL into your browser → pick your server → **Authorize** → solve
    the captcha.
@@ -141,10 +143,13 @@ matter at all — only the IDs do. You can name them anything; this guide uses
 | Channel (name it whatever you want) | What the bot does there | Goes into this setting |
 | --- | --- | --- |
 | e.g. `#achievement` | **Posts** achievement unlocks 🏆 and milestone/reward 👑 messages | `ACHIEVEMENT_CHANNEL_ID` |
-| e.g. `#chat` | **Talks with you** — replies to every message, remembers the convo | `SURVIVOR_CHAT_CHANNEL_ID` |
+| e.g. `#chat` | **Talks with you** — replies to every message, remembers the convo (linked players only) | `SURVIVOR_CHAT_CHANNEL_ID` |
+| e.g. a **voice** channel *(optional)* | **Tracks voice hours** for bonus points; can kick unlinked joiners | `GAME_VOICE_CHANNEL_ID` |
 
-Survivor is **silent everywhere except these two channels** (he announces in the
-first, chats in the second).
+Survivor is **silent everywhere except these two text channels** (he announces in
+the first, chats in the second). The voice channel is optional — set
+`GAME_VOICE_CHANNEL_ID` to its ID (right-click the voice channel → Copy Channel
+ID) only if you want voice-hour bonuses. Leave it blank to skip the feature.
 
 ### Steps
 1. In Discord, create the two channels (or reuse existing ones).
@@ -322,8 +327,10 @@ bot online all the time.
    - `ACHIEVEMENT_CHANNEL_ID`
    - `SURVIVOR_CHAT_CHANNEL_ID`
    - `STEAM_IDS` (optional)
+   - `GAME_VOICE_CHANNEL_ID` (optional — enables voice-hour bonuses)
    - Optional feature toggles (see `.env.example`): `NOW_PLAYING_ENABLED`,
-     `RECAP_ENABLED`, `BACKFILL_EXISTING`, `LOG_CHANNEL_ID`, `CHAT_COOLDOWN_MS`
+     `RECAP_ENABLED`, `BACKFILL_EXISTING`, `TRACK_ALL_GAMES`, `VOICE_KICK_UNLINKED`,
+     `VOICE_LINK_GRACE_SECONDS`, `LOG_CHANNEL_ID`, `CHAT_COOLDOWN_MS`
 3. Railway redeploys automatically. Open the **Deploy Logs** and wait for
    `✅ Survivor is awake`.
 
@@ -340,6 +347,20 @@ points. To prevent that:
 > 💾 To grab a backup anytime, run `!backup` (admin only) — Survivor DMs you the
 > full database file plus a readable CSV of everyone's points.
 
+### 8e. Restoring a backup (if you rebuild the bot later)
+
+The `.db` from `!backup` is a complete, self-contained snapshot, so you can always
+bring the data back — even on a brand-new bot or host:
+
+1. Stop the bot.
+2. Upload/copy the backed-up `.db` to the database path the bot uses — on Railway
+   that's the volume location in `DATABASE_PATH` (e.g. `/data/survivor.db`);
+   locally it's `./survivor.db`. Rename the file to match exactly.
+3. Remove any leftover `*.db-wal` / `*.db-shm` files next to it (the backup is
+   already consolidated into the single `.db`).
+4. Start the bot. Points, links, streaks, and voice hours resume right where the
+   backup left off — the schema auto-migrates if a newer build added columns.
+
 Done — the bot now runs 24/7 and survives restarts.
 
 ---
@@ -354,4 +375,7 @@ Done — the bot now runs 24/7 and survives restarts.
 | Roles aren't given out | Bot's role isn't **above** the reward roles, or it lacks **Manage Roles** (Parts 2d & 3b). Check logs for `[roles] failed…`. |
 | Survivor won't chat at all | `SURVIVOR_CHAT_CHANNEL_ID` is blank or is the wrong channel ID (Part 4). Startup log shows which channel he's locked to. He only talks in that one channel. |
 | Survivor replies are generic/canned | `GEMINI_API_KEY` is missing or invalid. Announcements still post; check logs for `[survivor] Gemini API error`. |
+| Survivor deletes my chat messages | The chat channel is **linked players only** — run `!link <steamid64>` first. (Or you're over the 5-messages-per-hour budget.) |
+| Voice hours never announce | `GAME_VOICE_CHANNEL_ID` is blank/wrong, or the player hasn't linked their Steam (only linked players earn voice time). |
+| Unlinked users aren't kicked from voice | Set `VOICE_KICK_UNLINKED=true` and give the bot the **Move Members** permission; check logs for `[voice] couldn't disconnect`. |
 | Bot offline after closing terminal | Expected when running locally — do Part 8 (Railway) for 24/7 uptime. |

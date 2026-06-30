@@ -1,0 +1,54 @@
+[DONE] if someone linked their steamID, they shouldn't have linked another account. Only one time.
+[DONE] when making card/generate using !stats, make it not AI design, make it friendly user and neat design.
+[DONE] if someone tries !link @discordusername, we should be able to see it too even others can use it.
+[DONE] recommend some way to avoid spamming chat from other discord users.
+[DONE] when using bot commands, it should be only at achievements channel id. Not using any prefixes like ! would be delete immediately by bot.
+[DONE] in survivor bot channel id, discord users who are linked only have 5 chats to message there so it wouldnt be spam. After 5 chats of each discord users spent, bot would immediately delete it and let users know that it exceed.
+       (chat channel is now LINKED-ONLY too — unlinked messages are deleted with a nudge to !link)
+
+--------------NEXT PLANS (DONE)--------------
+
+[DONE] voice chat time (game channel id/voice channel id). Hours would depend on role newbie to veteran or something you recommended. In achievement channel id, announce hitted hours.
+       → GAME_VOICE_CHANNEL_ID tracks linked players' voice hours; Voice Newbie→Legend milestones (1/5/10/25h) award points and announce in the achievement channel.
+[DONE] can you check if other games achievements would counted in earning points? Add the feature if not and announce it too when someone achieve it.
+       → Was NOT counted before (Forest games only). Added TRACK_ALL_GAMES=true: counts new unlocks from any recently-played game, announced by name. Off by default (Steam API load); flip it on to enable.
+[DONE] can you check if using !backup db would get continue in the future when we rebuild it? If in case bot not working anymore, we still want to keep the data for future.
+       → Yes: the !backup .db is a complete self-contained SQLite snapshot. Documented the full restore steps in README + SETUP. Schema auto-migrates on restore.
+[DONE] thinking adding feature when discord user didn't still linked yet to steamid, notify that user in dm, 120 seconds would be given time before kicking out to voice channel (game).
+       → VOICE_KICK_UNLINKED=true: DMs unlinked joiners, VOICE_LINK_GRACE_SECONDS (default 120) grace, then disconnects (needs Move Members). Off by default; flip it on to enable.
+[DONE] update the readme, setup if necessary when you applied this NEXT PLANS features section.
+       → README.md, SETUP.md, and .env.example all updated.
+
+----- HOW TO APPLY ON RAILWAY (step by step) -----
+
+Note: change nothing and the bot still redeploys fine + the linked-only chat rule
+works automatically. Below is only to switch ON the new optional features.
+
+  1. Push the updated code to GitHub → Railway auto-redeploys.
+  2. Make sure the volume + DATABASE_PATH=/data/survivor.db are set (so the auto
+     DB migration for voice_seconds persists, and points aren't wiped).
+  3. (Optional) Railway → service → Variables, add only what you want:
+       - GAME_VOICE_CHANNEL_ID=<voice channel id>   (turns ON voice tracking)
+       - TRACK_ALL_GAMES=true                        (count non-Forest games)
+       - VOICE_KICK_UNLINKED=true                    (kick unlinked voice joiners)
+       - VOICE_LINK_GRACE_SECONDS=120                (optional, default 120)
+  4. Discord → Server Settings → Roles → the bot's "Survivor" role, enable:
+       - Manage Messages  (needed for linked-only chat deletion)
+       - Move Members     (only if VOICE_KICK_UNLINKED=true)
+     (No re-invite needed. If the voice channel is private, also give View Channel.)
+  5. Intents: nothing to do — GuildVoiceStates is NOT a privileged intent (no
+     Developer Portal toggle). Keep Server Members + Message Content as-is.
+  6. Confirm in Railway Deploy Logs:
+       "⚙️  ... | all-games: on"
+       "🎙️  Voice tracking on for channel <id> (kick unlinked: yes, after 120s)."
+     (The voice line only shows if GAME_VOICE_CHANNEL_ID is set.)
+
+  Minimum to use the new stuff: set GAME_VOICE_CHANNEL_ID (+ optionally
+  TRACK_ALL_GAMES / VOICE_KICK_UNLINKED) and give the role Manage Messages
+  (+ Move Members if kicking). Everything else is automatic.
+
+--------------FUTURE PLANS--------------
+
+- bot joins the voice chat (voice chat game id) automatically when there's 3 or more inside of it. Only use !join on chat of that voice channel when there's 2 or less discord users.
+- you should be looking for free plans/api when making this bot can hear audio (discord users). The feature about this part, he will only respond in text when someone screams or panicked.
+- make this hybrid setup instead I guess. For local machine run setup, using voice channel feature (I meant the bot hears us). For Railway setup, all of the features functional for bot except of course for voice feature since local machine would handle that.

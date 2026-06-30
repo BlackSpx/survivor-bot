@@ -38,3 +38,23 @@ export function rarityTier(pct) {
   if (pct == null || Number.isNaN(pct)) return null;
   return RARITY_TIERS.find((t) => pct <= t.maxPct) ?? null;
 }
+
+// ── Voice activity milestones ────────────────────────────────────────────────
+// Time spent together in the game voice channel earns points at these cumulative
+// hour thresholds, ranking a player from newbie to veteran. Each is announced in
+// the achievement channel and the points feed straight into the normal totals
+// (so they can also trip the 100/200/300/500 role rewards above).
+export const VOICE_MILESTONES = [
+  { hours: 1, points: 20, emoji: '🎙️', label: 'Voice Newbie' },
+  { hours: 5, points: 40, emoji: '🗣️', label: 'Voice Regular' },
+  { hours: 10, points: 75, emoji: '🔥', label: 'Voice Veteran' },
+  { hours: 25, points: 150, emoji: '👑', label: 'Voice Legend' },
+];
+
+/**
+ * Every voice milestone crossed between two cumulative voice-hour totals
+ * (fractional hours). e.g. 0.5 -> 6 returns the 1h and 5h milestones.
+ */
+export function voiceMilestonesCrossed(oldHours, newHours) {
+  return VOICE_MILESTONES.filter((m) => m.hours > oldHours && m.hours <= newHours);
+}

@@ -47,6 +47,33 @@ export async function getPlayerAchievements(steamId, appId) {
   }));
 }
 
+/**
+ * Games a player has played in the last two weeks, as [{ appId, name }].
+ * Used (when TRACK_ALL_GAMES is on) to discover non-Forest games worth checking
+ * for achievements without polling a player's entire library every cycle.
+ * Returns [] when the list is empty/hidden, or null on a real failure.
+ */
+export async function getRecentlyPlayedGames(steamId) {
+  const url =
+    `https://api.steampowered.com/IPlayerService/GetRecentlyPlayedGames/v1/` +
+    `?key=${API_KEY}&steamid=${steamId}`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      if (res.status >= 500) health.reportError('Steam', `HTTP ${res.status}`);
+      return null;
+    }
+    health.reportOk('Steam');
+    const data = await res.json();
+    const games = data?.response?.games;
+    if (!Array.isArray(games)) return [];
+    return games.map((g) => ({ appId: String(g.appid), name: g.name || `App ${g.appid}` }));
+  } catch (err) {
+    health.reportError('Steam', err.message);
+    return null;
+  }
+}
+
 // Global achievement rarity (% of all owners who have each achievement).
 // Cached per game — these percentages barely move, so we refresh infrequently
 // to avoid hammering Steam on every poll cycle.

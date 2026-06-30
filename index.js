@@ -26,11 +26,18 @@ import {
   getPlayerSummary,
   getGlobalAchievementPct,
   probeAchievementAccess,
+  getRecentlyPlayedGames,
 } from './src/steam.js';
 import * as survivor from './src/survivor.js';
 import * as health from './src/health.js';
-import { REWARDS, milestonesCrossed, rewardForPoints, rarityTier } from './src/rewards.js';
-import { TRACKED_APP_IDS, gameName } from './src/games.js';
+import {
+  REWARDS,
+  milestonesCrossed,
+  rewardForPoints,
+  rarityTier,
+  voiceMilestonesCrossed,
+} from './src/rewards.js';
+import { TRACKED_APP_IDS, gameName, rememberGameName } from './src/games.js';
 
 const {
   DISCORD_BOT_TOKEN,
@@ -47,6 +54,10 @@ const {
   OWNER_PING = 'false',
   ADMIN_DISCORD_IDS = '',
   PRIZE_POINTS_THRESHOLD = '500',
+  GAME_VOICE_CHANNEL_ID = '',
+  VOICE_KICK_UNLINKED = 'false',
+  VOICE_LINK_GRACE_SECONDS = '120',
+  TRACK_ALL_GAMES = 'false',
 } = process.env;
 
 // Who may run admin commands (!backup, !addpoints, !setpoints). If ADMIN_DISCORD_IDS
@@ -72,6 +83,13 @@ const NOW_PLAYING_MIN_GAP_MS = 2 * 60 * 60 * 1000; // don't re-announce within 2
 const nowPlayingOn = NOW_PLAYING_ENABLED === 'true';
 const recapOn = RECAP_ENABLED === 'true';
 const backfillOn = BACKFILL_EXISTING === 'true';
+
+// Voice-channel tracking. Only active when GAME_VOICE_CHANNEL_ID is set.
+const kickUnlinked = VOICE_KICK_UNLINKED === 'true';
+const VOICE_GRACE_SEC = Number(VOICE_LINK_GRACE_SECONDS) || 120;
+const VOICE_FLUSH_MS = 60 * 1000; // credit active voice sessions once a minute
+// Count achievements from games OTHER than The Forest / Sons of the Forest.
+const trackAllGames = TRACK_ALL_GAMES === 'true';
 
 // ── Startup checks ───────────────────────────────────────────────────────────
 
@@ -113,6 +131,7 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.DirectMessages,
   ],
   partials: [Partials.Channel],
@@ -208,47 +227,86 @@ async function pollPlayer(player, channel) {
   // Normal path: detect newly-unlocked achievements across all tracked games.
   const name = await displayName(player);
   for (const appId of TRACKED_APP_IDS) {
-    const achievements = await getPlayerAchievements(player.steam_id, appId);
-    if (!achievements) continue;
-    const rarityMap = await getGlobalAchievementPct(appId); // may be null
+    await processGameAchievements(player, appId, name, gameName(appId), channel, {
+      baselineOnly: false,
+    });
+  }
 
+  // Optionally also count achievements from any OTHER game the player has been
+  // playing recently. The first time we see a given game for a player we baseline
+  // it silently (no retroactive points), then award only new unlocks afterward.
+  if (trackAllGames) {
+    const recent = await getRecentlyPlayedGames(player.steam_id);
+    for (const g of recent ?? []) {
+      if (TRACKED_APP_IDS.includes(g.appId)) continue;
+      rememberGameName(g.appId, g.name);
+      const seen = db.gameSeenForPlayer(player.discord_id, g.appId);
+      await processGameAchievements(player, g.appId, name, g.name, channel, {
+        baselineOnly: !seen,
+      });
+    }
+  }
+}
+
+/**
+ * Award (or, on a game's first sighting, silently baseline) a player's unlocked
+ * achievements for one game. Shared by the Forest games and — when
+ * TRACK_ALL_GAMES is on — any other recently-played game.
+ */
+async function processGameAchievements(player, appId, playerName, gameLabel, channel, { baselineOnly }) {
+  const achievements = await getPlayerAchievements(player.steam_id, appId);
+  if (!achievements) return;
+
+  // First time we've seen this game for the player: record what they already
+  // have as a baseline (no points, no announcements) so only future unlocks earn.
+  if (baselineOnly) {
+    let existing = 0;
     for (const ach of achievements) {
       if (!ach.achieved) continue;
-      if (db.hasAchievement(player.discord_id, appId, ach.apiname)) continue;
-
-      // Bonuses (checked BEFORE recording, so first-blood sees a clean slate).
-      const firstBlood = db.achievementOwnerCount(appId, ach.apiname) === 0;
-      const pct = rarityMap?.get(ach.apiname);
-      const rarity = rarityTier(pct);
-
-      db.recordAchievement(
-        player.discord_id,
-        appId,
-        ach.apiname,
-        ach.displayName,
-        ach.unlockTime,
-        1 // awarded
-      );
-
-      const streak = db.recordUnlockDay(player.discord_id, Math.floor(Date.now() / DAY_MS));
-      const streakBonus = Math.min((streak.current - 1) * STREAK_BONUS_PER_DAY, STREAK_BONUS_MAX);
-      const firstBloodBonus = firstBlood ? FIRST_BLOOD_BONUS : 0;
-      const rarityBonus = rarity?.bonus ?? 0;
-      const gained = POINTS_PER_ACHIEVEMENT + firstBloodBonus + rarityBonus + Math.max(0, streakBonus);
-
-      const before = db.getPlayer(player.discord_id).points;
-      const after = db.addPoints(player.discord_id, gained);
-      await announceAchievement(channel, name, ach.displayName, gameName(appId), after, {
-        gained,
-        firstBloodBonus,
-        rarity,
-        rarityPct: pct,
-        rarityBonus,
-        streak,
-        streakBonus: Math.max(0, streakBonus),
-      });
-      await handleMilestones(channel, player.discord_id, name, before, after);
+      db.recordAchievement(player.discord_id, appId, ach.apiname, ach.displayName, ach.unlockTime, 0);
+      existing += 1;
     }
+    console.log(`[poll] baselined ${gameLabel} for ${player.discord_id} (${existing} achievements, no points)`);
+    return;
+  }
+
+  const rarityMap = await getGlobalAchievementPct(appId); // may be null
+  for (const ach of achievements) {
+    if (!ach.achieved) continue;
+    if (db.hasAchievement(player.discord_id, appId, ach.apiname)) continue;
+
+    // Bonuses (checked BEFORE recording, so first-blood sees a clean slate).
+    const firstBlood = db.achievementOwnerCount(appId, ach.apiname) === 0;
+    const pct = rarityMap?.get(ach.apiname);
+    const rarity = rarityTier(pct);
+
+    db.recordAchievement(
+      player.discord_id,
+      appId,
+      ach.apiname,
+      ach.displayName,
+      ach.unlockTime,
+      1 // awarded
+    );
+
+    const streak = db.recordUnlockDay(player.discord_id, Math.floor(Date.now() / DAY_MS));
+    const streakBonus = Math.min((streak.current - 1) * STREAK_BONUS_PER_DAY, STREAK_BONUS_MAX);
+    const firstBloodBonus = firstBlood ? FIRST_BLOOD_BONUS : 0;
+    const rarityBonus = rarity?.bonus ?? 0;
+    const gained = POINTS_PER_ACHIEVEMENT + firstBloodBonus + rarityBonus + Math.max(0, streakBonus);
+
+    const before = db.getPlayer(player.discord_id).points;
+    const after = db.addPoints(player.discord_id, gained);
+    await announceAchievement(channel, playerName, ach.displayName, gameLabel, after, {
+      gained,
+      firstBloodBonus,
+      rarity,
+      rarityPct: pct,
+      rarityBonus,
+      streak,
+      streakBonus: Math.max(0, streakBonus),
+    });
+    await handleMilestones(channel, player.discord_id, playerName, before, after);
   }
 }
 
@@ -363,6 +421,141 @@ async function pollAllPlayers() {
       console.error(`[poll] error for ${player.discord_id}: ${err.message}`);
     }
   }
+}
+
+// ── Voice activity ───────────────────────────────────────────────────────────
+// Track time linked players spend together in the game voice channel. Time is
+// credited to a cumulative total; crossing a VOICE_MILESTONES hour threshold
+// awards points and announces a newbie→veteran rank in the achievement channel.
+// Unlinked players who join can be warned + kicked after a grace period.
+
+const voiceSessions = new Map(); // discordId -> { since: ms } (active in the channel)
+const unlinkedKickTimers = new Map(); // discordId -> Timeout
+
+async function handleVoiceMilestones(player, beforeSec, afterSec) {
+  const crossed = voiceMilestonesCrossed(beforeSec / 3600, afterSec / 3600);
+  if (crossed.length === 0) return;
+  const channel = await getAchievementChannel();
+  const name = await displayName(player);
+  for (const m of crossed) {
+    const before = db.getPlayer(player.discord_id).points;
+    const after = db.addPoints(player.discord_id, m.points);
+    const line = await survivor.commentVoiceMilestone(name, m.hours, m.label);
+    const embed = new EmbedBuilder()
+      .setColor(0x9c27b0)
+      .setDescription(
+        `${m.emoji} **${name}** reached **${m.hours}h** in voice — **${m.label}**!\n\n` +
+          `${line}\n\n**+${m.points} pts** | Total: **${after} pts**`
+      );
+    if (channel) await channel.send({ embeds: [embed] });
+    // Voice points can also trip the normal 100/200/300/500 role milestones.
+    await handleMilestones(channel, player.discord_id, name, before, after);
+    await assignRolesUpTo(player.discord_id, after);
+  }
+}
+
+/** Credit elapsed time for one active voice session. Only linked players earn. */
+async function creditVoiceSession(userId, { remove }) {
+  const sess = voiceSessions.get(userId);
+  if (!sess) return;
+  const elapsedSec = (Date.now() - sess.since) / 1000;
+  sess.since = Date.now();
+  if (remove) voiceSessions.delete(userId);
+
+  const player = db.getPlayer(userId);
+  if (!player?.steam_id || elapsedSec < 1) return; // unlinked time isn't counted
+  const before = db.getVoiceSeconds(userId);
+  const after = db.addVoiceSeconds(userId, elapsedSec);
+  await handleVoiceMilestones(player, before, after);
+}
+
+/** Periodic sweep so long, ongoing sessions still announce milestones in time. */
+async function flushVoiceSessions() {
+  for (const userId of [...voiceSessions.keys()]) {
+    try {
+      await creditVoiceSession(userId, { remove: false });
+    } catch (err) {
+      console.error(`[voice] flush error for ${userId}: ${err.message}`);
+    }
+  }
+}
+
+/** DM an unlinked joiner, then disconnect them after the grace period unless they
+ *  link (or leave) in time. Needs the "Move Members" permission to disconnect. */
+function scheduleUnlinkedKick(member) {
+  if (unlinkedKickTimers.has(member.id)) return;
+  member.user
+    .send(
+      `🌲 You hopped into the game voice channel but haven't linked your Steam yet. ` +
+        `Run \`!link <steamid64>\` (here in my DMs or in the server) within ` +
+        `**${VOICE_GRACE_SEC} seconds**, or I'll boot you from the channel. ` +
+        `Find your SteamID64 at https://steamid.io/`
+    )
+    .catch(() => {});
+
+  const timer = setTimeout(async () => {
+    unlinkedKickTimers.delete(member.id);
+    try {
+      if (db.getPlayer(member.id)?.steam_id) return; // linked in time — let them be
+      const m = await member.guild.members.fetch(member.id).catch(() => null);
+      if (!m || m.voice?.channelId !== GAME_VOICE_CHANNEL_ID) return; // already left
+      await m.voice.disconnect('Not linked to Steam').catch((err) => {
+        console.warn(
+          `[voice] couldn't disconnect ${member.id}: ${err.message}. ` +
+            `Give the bot the "Move Members" permission.`
+        );
+      });
+      m.user
+        .send(`🚪 Booted you from the game voice — link your Steam with \`!link <steamid64>\` and hop back in.`)
+        .catch(() => {});
+    } catch (err) {
+      console.error(`[voice] kick error for ${member.id}: ${err.message}`);
+    }
+  }, VOICE_GRACE_SEC * 1000);
+  unlinkedKickTimers.set(member.id, timer);
+}
+
+function onJoinGameVoice(member) {
+  voiceSessions.set(member.id, { since: Date.now() });
+  if (kickUnlinked && !db.getPlayer(member.id)?.steam_id) scheduleUnlinkedKick(member);
+}
+
+async function onLeaveGameVoice(member) {
+  const timer = unlinkedKickTimers.get(member.id);
+  if (timer) {
+    clearTimeout(timer);
+    unlinkedKickTimers.delete(member.id);
+  }
+  await creditVoiceSession(member.id, { remove: true });
+}
+
+client.on('voiceStateUpdate', async (oldState, newState) => {
+  try {
+    if (!GAME_VOICE_CHANNEL_ID) return;
+    const member = newState.member ?? oldState.member;
+    if (!member || member.user.bot) return;
+    const was = oldState.channelId === GAME_VOICE_CHANNEL_ID;
+    const is = newState.channelId === GAME_VOICE_CHANNEL_ID;
+    if (was === is) return; // mute/deafen toggle or unrelated channel — ignore
+    if (is) onJoinGameVoice(member);
+    else await onLeaveGameVoice(member);
+  } catch (err) {
+    console.error(`[voice] state update error: ${err.message}`);
+  }
+});
+
+/** On boot, pick up anyone already sitting in the voice channel. */
+async function initVoiceTracking() {
+  if (!GAME_VOICE_CHANNEL_ID) return;
+  const channel = await fetchChannel(GAME_VOICE_CHANNEL_ID);
+  for (const member of channel?.members?.values?.() ?? []) {
+    if (!member.user.bot) onJoinGameVoice(member);
+  }
+  setInterval(() => flushVoiceSessions().catch(() => {}), VOICE_FLUSH_MS);
+  console.log(
+    `🎙️  Voice tracking on for channel ${GAME_VOICE_CHANNEL_ID} ` +
+      `(kick unlinked: ${kickUnlinked ? `yes, after ${VOICE_GRACE_SEC}s` : 'no'}).`
+  );
 }
 
 // ── Weekly recap ─────────────────────────────────────────────────────────────
@@ -559,7 +752,8 @@ function payloadHelp(isAdminUser = false) {
     '',
     '**💰 How points work**',
     `> +${POINTS_PER_ACHIEVEMENT} per achievement · 🩸 +${FIRST_BLOOD_BONUS} for being first in the group to grab one · ` +
-      `💎 rarity bonus for hard ones · 🔥 streak bonus for unlocking on back-to-back days.`,
+      `💎 rarity bonus for hard ones · 🔥 streak bonus for unlocking on back-to-back days` +
+      (GAME_VOICE_CHANNEL_ID ? ' · 🎙️ bonus points for hours spent in the game voice channel.' : '.'),
   ];
   if (isAdminUser) {
     lines.push(
@@ -885,9 +1079,19 @@ async function actionBackup(user) {
     await db.backupDatabase(tmpDb);
 
     const players = db.exportPlayers();
-    const header = 'discord_id,steam_id,steam_name,points,current_streak,best_streak,last_milestone';
+    const header =
+      'discord_id,steam_id,steam_name,points,current_streak,best_streak,last_milestone,voice_seconds';
     const rows = players.map((p) =>
-      [p.discord_id, p.steam_id, p.steam_name, p.points, p.current_streak, p.best_streak, p.last_milestone]
+      [
+        p.discord_id,
+        p.steam_id,
+        p.steam_name,
+        p.points,
+        p.current_streak,
+        p.best_streak,
+        p.last_milestone,
+        p.voice_seconds,
+      ]
         .map(csvCell)
         .join(',')
     );
@@ -1586,6 +1790,15 @@ client.on('messageCreate', async (message) => {
     // The chat channel: Survivor converses, but each user gets a rolling budget
     // of messages so nobody can flood it. Over budget → delete + a quick heads-up.
     if (inChatChannel) {
+      // Linked players only — Survivor doesn't trade survival tips with ghosts.
+      if (!db.getPlayer(message.author.id)?.steam_id) {
+        await deleteAndNotify(
+          message,
+          `🌲 <@${message.author.id}> link your Steam first to talk to me here — ` +
+            `run \`!link <steamid64>\` in the achievements channel (or my DMs).`
+        );
+        return;
+      }
       const budget = spendChatBudget(message.author.id);
       if (!budget.allowed) {
         await deleteAndNotify(
@@ -1628,13 +1841,14 @@ client.once('clientReady', async () => {
   }
   console.log(
     `⚙️  now-playing: ${nowPlayingOn ? 'on' : 'off'} | weekly recap: ${recapOn ? 'on' : 'off'} | ` +
-      `backfill: ${backfillOn ? 'on' : 'off'}`
+      `backfill: ${backfillOn ? 'on' : 'off'} | all-games: ${trackAllGames ? 'on' : 'off'}`
   );
 
   seedFromEnv();
   loadChatHistory();
   await registerSlashCommands();
   startRecapScheduler();
+  await initVoiceTracking();
 
   await pollAllPlayers();
   const interval = Number(POLL_INTERVAL_MS) || 300000;
