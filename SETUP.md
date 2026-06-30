@@ -86,6 +86,8 @@ commands or assign roles.)
    - ✅ **Send Messages**
    - ✅ **Read Message History**
    - ✅ **Manage Roles**
+   - ✅ **Manage Messages**  ← needed to keep the achievements channel
+     commands-only and to enforce the chat channel's per-user message budget
 4. Scroll down, copy the **Generated URL** at the bottom.
 5. Paste that URL into your browser → pick your server → **Authorize** → solve
    the captcha.

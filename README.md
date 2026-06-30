@@ -47,7 +47,8 @@ Available as both slash commands (`/points`) and prefix commands (`!points`).
 | `/points` | Shows your own points |
 | `/achievements [user]` | Lists achievements you (or someone) have unlocked |
 | `/progress [user]` | Shows achievement completion % per game |
-| `/link <steamid64>` | Links your Steam ID (rejected with instructions if your profile is private) |
+| `/link <steamid64>` | Links your Steam ID (rejected if private; one Steam per person — `/unlink` first to switch) |
+| `!link @user` | Looks up who that member has linked (prefix-only; anyone can use it) |
 | `/unlink` | Removes your Steam link (keeps your points) |
 | `/survey` | Survivor asks the group a random fun question |
 | `/addpoints <user> <amount>` | **(Admin)** Add points (negative to subtract) |
@@ -66,13 +67,23 @@ Survivor talks in **exactly one server channel** — the one you set as
 `SURVIVOR_CHAT_CHANNEL_ID`. In that channel he replies to **every** message and
 holds a real back-and-forth conversation. Because each message is tagged with the
 speaker's name, the whole group can talk to him at once and he answers each
-person specifically. A per-user **cooldown** (`CHAT_COOLDOWN_MS`) keeps it from
-spamming the Gemini API.
+person specifically. Two layers keep it from spamming: a per-user **cooldown**
+(`CHAT_COOLDOWN_MS`) throttles back-to-back replies, and a rolling **budget of 5
+messages per user per hour** caps the volume — once a user is over budget their
+extra messages are deleted with a quick heads-up. (Both need the bot to have
+**Manage Messages** in that channel to delete.)
 
 He also chats **one-on-one in DMs**, but only with **linked players** and only
 about **video games** — DM him anything off-topic and he'll deflect it in
 character. (Unlinked users just get nudged to `!link` first.) He stays silent in
-every *other* server channel, though commands work anywhere.
+every *other* server channel.
+
+**Where commands work:** `!` commands run in the **achievements channel**
+(`ACHIEVEMENT_CHANNEL_ID`) and in **DMs**. That channel is commands-only — any
+message there that doesn't start with `!` is deleted immediately to keep it tidy.
+(If you leave `ACHIEVEMENT_CHANNEL_ID` blank, commands fall back to working
+anywhere so the bot is still usable before setup.) Slash (`/`) commands work
+anywhere as usual.
 
 **Personality:** he's a sarcastic, hard-to-get gamer — short and sharp for
 casual banter, but he drops the act and gives a real, detailed answer when you

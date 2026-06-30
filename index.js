@@ -439,6 +439,56 @@ function onCooldown(userId) {
   return false;
 }
 
+// Rolling per-user message budget for the chat channel: each user may send up to
+// CHAT_BUDGET messages per CHAT_BUDGET_WINDOW_MS. In-memory by design — a restart
+// forgives everyone, and a rolling window needs no daily-reset bookkeeping.
+const CHAT_BUDGET = 5;
+const CHAT_BUDGET_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const chatBudget = new Map(); // userId -> [timestamps within the window]
+
+/**
+ * Try to spend one message from a user's rolling budget.
+ * Returns { allowed:true } if there was room (and records the message), or
+ * { allowed:false, retryMinutes } if they're already at the cap.
+ */
+function spendChatBudget(userId) {
+  const now = Date.now();
+  const recent = (chatBudget.get(userId) ?? []).filter((t) => now - t < CHAT_BUDGET_WINDOW_MS);
+  if (recent.length >= CHAT_BUDGET) {
+    chatBudget.set(userId, recent); // keep the pruned list
+    const retryMinutes = Math.max(1, Math.ceil((CHAT_BUDGET_WINDOW_MS - (now - recent[0])) / 60000));
+    return { allowed: false, retryMinutes };
+  }
+  recent.push(now);
+  chatBudget.set(userId, recent);
+  return { allowed: true };
+}
+
+/**
+ * Delete an offending message and drop a brief notice that cleans itself up, so
+ * the channel doesn't fill with bot scolding. Needs the "Manage Messages"
+ * permission to delete — warns (doesn't crash) if it's missing.
+ */
+async function deleteAndNotify(message, text) {
+  try {
+    await message.delete();
+  } catch (err) {
+    console.warn(
+      `[moderation] couldn't delete a message in ${message.channel.id}: ${err.message}. ` +
+        `Give the bot the "Manage Messages" permission in that channel.`
+    );
+  }
+  try {
+    const notice = await message.channel.send({
+      content: text,
+      allowedMentions: { users: [message.author.id] },
+    });
+    setTimeout(() => notice.delete().catch(() => {}), 8000);
+  } catch {
+    /* sending the notice is best-effort */
+  }
+}
+
 async function converse(message, { dm = false } = {}) {
   const channelId = message.channel.id;
   const history = getHistory(channelId);
@@ -483,6 +533,8 @@ function payloadHelp(isAdminUser = false) {
     '**🚀 Getting started**',
     '`!link <steamid64>` — link your Steam (find it at https://steamid.io/)',
     '> Your Steam profile + *Game details* must be Public, or I can\'t see your unlocks.',
+    '> One Steam per person — `!unlink` first if you ever need to switch accounts.',
+    '`!link @user` — see who someone else has linked',
     '',
     '**📊 See how you\'re doing**',
     '`!stats [@user]` — your survivor card (points, streak, rank role)',
@@ -618,6 +670,16 @@ async function payloadRank(userId, username) {
   return { content: line };
 }
 
+// Each reward tier gets its own card color so a glance at the embed tells you
+// roughly how far along someone is. Falls back to a muted slate for the unranked.
+const ROLE_COLORS = {
+  'Forest Rookie': 0x8bc34a,
+  'Axe Master': 0x03a9f4,
+  'Base Builder': 0xff9800,
+  'Forest Legend': 0xffd700,
+};
+const NO_ROLE_COLOR = 0x607d8b;
+
 async function payloadStats(user) {
   const player = db.getPlayer(user.id);
   if (!player) {
@@ -628,34 +690,76 @@ async function payloadStats(user) {
   const rank = board.findIndex((p) => p.discord_id === user.id) + 1;
   const role = [...REWARDS].reverse().find((r) => player.points >= r.points);
   const nextRole = REWARDS.find((r) => player.points < r.points);
+  const streak = player.current_streak || 0;
 
-  const lines = [
-    `🪵 **Points:** ${player.points}` + (rank ? `  ·  rank **#${rank}** of ${board.length}` : ''),
-    `🏆 **Achievements tracked:** ${achs.length}`,
-    `🔥 **Streak:** ${player.current_streak || 0} day${(player.current_streak || 0) === 1 ? '' : 's'}  ·  best ${player.best_streak || 0}`,
-    `🎖️ **Rank role:** ${role ? `${role.emoji} ${role.name}` : '— none yet'}`,
-  ];
-  if (nextRole) {
-    lines.push(`🎯 **Next:** ${nextRole.emoji} ${nextRole.name} in ${nextRole.points - player.points} pts`);
-  }
-  if (!player.steam_id) {
-    lines.push('\n⚠️ No Steam linked — `!link <steamid64>` to start earning.');
-  }
-
-  const embed = new EmbedBuilder()
-    .setColor(0x8bc34a)
-    .setTitle(`📈 ${user.username}'s Survivor Card`)
-    .setDescription(lines.join('\n'));
-
-  // Dress the card with the player's Steam profile picture (and link the title
-  // to their Steam profile). Best-effort — skip silently if Steam is unreachable
-  // or the profile is private.
+  // Pull the Steam profile (avatar + URL) and live per-game completion. All
+  // best-effort: a private/unreachable profile just means a leaner card.
+  let avatar = null;
+  let profileUrl = null;
+  const progressLines = [];
   if (player.steam_id) {
     const summary = await getPlayerSummary(player.steam_id);
-    if (summary?.avatar) embed.setThumbnail(summary.avatar);
-    if (summary?.profileUrl) embed.setURL(summary.profileUrl);
+    avatar = summary?.avatar ?? null;
+    profileUrl = summary?.profileUrl ?? null;
+    for (const appId of TRACKED_APP_IDS) {
+      const list = await getPlayerAchievements(player.steam_id, appId);
+      if (!list || list.length === 0) continue;
+      const done = list.filter((a) => a.achieved).length;
+      const pct = Math.round((done / list.length) * 100);
+      progressLines.push(`**${gameName(appId)}**  ${progressBar(pct)}  ${pct}%  _(${done}/${list.length})_`);
+    }
   }
+
+  const name = player.steam_name || user.username;
+  const embed = new EmbedBuilder()
+    .setColor(role ? ROLE_COLORS[role.name] ?? NO_ROLE_COLOR : NO_ROLE_COLOR)
+    .setAuthor({ name: `${name} — Survivor Card`, ...(avatar ? { iconURL: avatar } : {}) });
+  if (avatar) embed.setThumbnail(avatar);
+  if (profileUrl) embed.setURL(profileUrl);
+
+  embed.addFields(
+    { name: '🪵 Points', value: `**${player.points}**`, inline: true },
+    { name: '🏅 Rank', value: rank ? `#${rank} of ${board.length}` : '—', inline: true },
+    { name: '🔥 Streak', value: `${streak}d · best ${player.best_streak || 0}`, inline: true },
+    { name: '🎖️ Rank role', value: role ? `${role.emoji} ${role.name}` : '— none yet', inline: true },
+    {
+      name: '🎯 Next role',
+      value: nextRole
+        ? `${nextRole.emoji} ${nextRole.name}\n+${nextRole.points - player.points} pts to go`
+        : '👑 Maxed out',
+      inline: true,
+    }
+  );
+
+  if (progressLines.length) {
+    embed.addFields({ name: '🌲 Game progress', value: progressLines.join('\n') });
+  } else if (!player.steam_id) {
+    embed.addFields({
+      name: '⚠️ No Steam linked',
+      value: '`!link <steamid64>` to start earning points.',
+    });
+  } else {
+    embed.addFields({ name: '🏆 Achievements tracked', value: `${achs.length}` });
+  }
+
   return { embeds: [embed] };
+}
+
+// Public lookup: "!link @user" (a mention instead of a SteamID) shows who that
+// player has linked. Anyone can run it — it's read-only.
+async function payloadWhois(user) {
+  const player = db.getPlayer(user.id);
+  if (!player?.steam_id) {
+    return { content: `🔍 **${user.username}** hasn't linked a Steam account yet.` };
+  }
+  const summary = await getPlayerSummary(player.steam_id);
+  const steamName = player.steam_name || summary?.personaname || player.steam_id;
+  const url = summary?.profileUrl;
+  return {
+    content:
+      `🔗 **${user.username}** is linked to Steam **${steamName}** — **${player.points}** pts.` +
+      (url ? `\n${url}` : ` (\`${player.steam_id}\`)`),
+  };
 }
 
 async function payloadSurvey() {
@@ -676,6 +780,18 @@ async function actionLink(userId, username, steamId) {
     return {
       content:
         'That needs to be a 17-digit SteamID64. Find yours at https://steamid.io/',
+    };
+  }
+  // One Discord = one Steam, for keeps. If you already have a *different* Steam
+  // linked, you have to let go of it first — no quietly swapping accounts to
+  // farm a second head start. (Re-running !link with the SAME id is fine.)
+  const me = db.getPlayer(userId);
+  if (me?.steam_id && me.steam_id !== steamId) {
+    const current = me.steam_name ? `**${me.steam_name}** (${me.steam_id})` : `**${me.steam_id}**`;
+    return {
+      content:
+        `🪢 You're already linked to ${current}. You only get one Steam link — ` +
+        `run \`!unlink\` first if you really need to switch accounts.`,
     };
   }
   const owner = db.getPlayerBySteamId(steamId);
@@ -834,9 +950,17 @@ async function handleCommand(message) {
     case '!progress':
       await message.reply(await payloadProgress(message.mentions.users.first() ?? message.author));
       return true;
-    case '!link':
-      await message.reply(await actionLink(message.author.id, message.author.username, args[0]));
+    case '!link': {
+      // "!link @user" is a public lookup of who that person linked; "!link <id>"
+      // links your own Steam.
+      const mentioned = message.mentions.users.first();
+      if (mentioned) {
+        await message.reply(await payloadWhois(mentioned));
+      } else {
+        await message.reply(await actionLink(message.author.id, message.author.username, args[0]));
+      }
       return true;
+    }
     case '!unlink':
       await message.reply(actionUnlink(message.author.id, message.author.username));
       return true;
@@ -878,9 +1002,10 @@ async function handleCommand(message) {
       return true;
     }
     default:
-      // Friendly nudge for typo'd commands, but stay quiet in the free-chat
-      // channel where a lone "!" might just be conversation.
-      if (/^![a-z]+$/.test(cmd) && message.channel.id !== SURVIVOR_CHAT_CHANNEL_ID) {
+      // Friendly nudge for typo'd commands. (Commands only run in the
+      // achievements channel and DMs now, so there's no free-chat channel to
+      // stay quiet in here.)
+      if (/^![a-z]+$/.test(cmd)) {
         await message.reply(`I don't know \`${cmd}\`. Try \`!help\` for everything I can do.`);
         return true;
       }
@@ -1065,15 +1190,47 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    if (message.content.startsWith('!')) {
-      const handled = await handleCommand(message);
-      if (handled) return;
+    const inAchievementChannel =
+      ACHIEVEMENT_CHANNEL_ID && message.channel.id === ACHIEVEMENT_CHANNEL_ID;
+    const inChatChannel =
+      SURVIVOR_CHAT_CHANNEL_ID && message.channel.id === SURVIVOR_CHAT_CHANNEL_ID;
+
+    // The achievements channel is commands-only: ! commands run here, and any
+    // other (non-command) message gets deleted on sight to keep it clean.
+    if (inAchievementChannel) {
+      if (message.content.startsWith('!')) {
+        await handleCommand(message);
+      } else {
+        await deleteAndNotify(
+          message,
+          `🌲 <@${message.author.id}> the achievements channel is commands-only — ` +
+            `talk to me in the chat channel. Try \`!help\` to see what I do here.`
+        );
+      }
+      return;
     }
 
-    // Survivor only converses in his one designated channel.
-    if (SURVIVOR_CHAT_CHANNEL_ID && message.channel.id === SURVIVOR_CHAT_CHANNEL_ID) {
-      if (onCooldown(message.author.id)) return; // spam guard
+    // The chat channel: Survivor converses, but each user gets a rolling budget
+    // of messages so nobody can flood it. Over budget → delete + a quick heads-up.
+    if (inChatChannel) {
+      const budget = spendChatBudget(message.author.id);
+      if (!budget.allowed) {
+        await deleteAndNotify(
+          message,
+          `🪵 <@${message.author.id}> you've used your ${CHAT_BUDGET} messages this hour — ` +
+            `give the forest a rest (try again in ~${budget.retryMinutes} min).`
+        );
+        return;
+      }
+      if (onCooldown(message.author.id)) return; // finer per-message throttle
       await converse(message);
+      return;
+    }
+
+    // No designated achievements channel configured yet → don't lock commands to
+    // nowhere; let them work anywhere so the bot is usable before setup.
+    if (!ACHIEVEMENT_CHANNEL_ID && message.content.startsWith('!')) {
+      await handleCommand(message);
     }
   } catch (err) {
     console.error(`[message] handler error: ${err.message}`);
