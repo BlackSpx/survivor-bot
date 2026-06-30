@@ -51,8 +51,10 @@ Available as both slash commands (`/points`) and prefix commands (`!points`).
 | `!link @user` | Looks up who that member has linked (prefix-only; anyone can use it) |
 | `/unlink` | Removes your Steam link (keeps your points) |
 | `/survey` | Survivor asks the group a random fun question |
+| `/prize` | View (and claim) the prize an admin set for you — the **Take Prize** button unlocks at 500 pts |
 | `/addpoints <user> <amount>` | **(Admin)** Add points (negative to subtract) |
 | `/setpoints <user> <amount>` | **(Admin)** Set a player's point total |
+| `!prizefor [@user]` | **(Admin)** Set a prize image for a player — lists linked players to pick from if no `@user` (prefix flow); `/prizefor <user> <image> [notes]` does it in one shot |
 | `/backup` | **(Admin)** DM yourself a full DB backup + a readable CSV of every player |
 
 > Slash commands require inviting the bot with the **`applications.commands`**

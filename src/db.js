@@ -46,6 +46,17 @@ db.exec(`
     key   TEXT PRIMARY KEY,
     value TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS prizes (
+    discord_id TEXT PRIMARY KEY,
+    image      BLOB NOT NULL,
+    image_name TEXT,
+    notes      TEXT,
+    set_by     TEXT,
+    created_at INTEGER NOT NULL,
+    claimed    INTEGER NOT NULL DEFAULT 0,
+    claimed_at INTEGER
+  );
 `);
 
 // ── Migrations (add columns to existing tables without losing data) ──────────
@@ -278,6 +289,47 @@ const exportPlayersStmt = db.prepare(`
 `);
 export function exportPlayers() {
   return exportPlayersStmt.all();
+}
+
+// ── Prizes (admin-set rewards a player claims at a point threshold) ───────────
+// One prize per player. The image is stored as a BLOB so it survives Discord's
+// CDN link expiry — we re-attach the bytes from the DB every time it's shown.
+// Re-setting a prize overwrites the old one and resets its claimed state.
+
+const setPrizeStmt = db.prepare(`
+  INSERT INTO prizes (discord_id, image, image_name, notes, set_by, created_at, claimed, claimed_at)
+  VALUES (@discord_id, @image, @image_name, @notes, @set_by, @created_at, 0, NULL)
+  ON CONFLICT(discord_id) DO UPDATE SET
+    image      = excluded.image,
+    image_name = excluded.image_name,
+    notes      = excluded.notes,
+    set_by     = excluded.set_by,
+    created_at = excluded.created_at,
+    claimed    = 0,
+    claimed_at = NULL
+`);
+export function setPrize(discordId, { image, imageName, notes, setBy }) {
+  setPrizeStmt.run({
+    discord_id: discordId,
+    image,
+    image_name: imageName ?? null,
+    notes: notes ?? null,
+    set_by: setBy ?? null,
+    created_at: Date.now(),
+  });
+}
+
+const getPrizeStmt = db.prepare('SELECT * FROM prizes WHERE discord_id = ?');
+export function getPrize(discordId) {
+  return getPrizeStmt.get(discordId);
+}
+
+const markPrizeClaimedStmt = db.prepare(
+  'UPDATE prizes SET claimed = 1, claimed_at = ? WHERE discord_id = ? AND claimed = 0'
+);
+/** Mark a prize claimed. Returns true only if it was unclaimed (atomic guard). */
+export function markPrizeClaimed(discordId) {
+  return markPrizeClaimedStmt.run(Date.now(), discordId).changes > 0;
 }
 
 // ── Meta (key/value bot state) ───────────────────────────────────────────────

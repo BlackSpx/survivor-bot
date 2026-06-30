@@ -15,6 +15,9 @@ import {
   PermissionFlagsBits,
   MessageFlags,
   AttachmentBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
 } from 'discord.js';
 
 import * as db from './src/db.js';
@@ -43,6 +46,7 @@ const {
   OWNER_DISCORD_ID = '',
   OWNER_PING = 'false',
   ADMIN_DISCORD_IDS = '',
+  PRIZE_POINTS_THRESHOLD = '500',
 } = process.env;
 
 // Who may run admin commands (!backup, !addpoints, !setpoints). If ADMIN_DISCORD_IDS
@@ -53,6 +57,9 @@ const ADMIN_IDS = (ADMIN_DISCORD_IDS || OWNER_DISCORD_ID || '')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
+
+// Points a player must reach before they can claim an admin-set prize.
+const PRIZE_THRESHOLD = Number(PRIZE_POINTS_THRESHOLD) || 500;
 
 const POINTS_PER_ACHIEVEMENT = 10;
 const FIRST_BLOOD_BONUS = 15; // first in the group to unlock an achievement
@@ -546,6 +553,7 @@ function payloadHelp(isAdminUser = false) {
     '',
     '**🎉 For fun**',
     '`!survey` — I ask the group a random (unhinged) question',
+    `\`!prize\` — view & claim the prize an admin set for you (needs ${PRIZE_THRESHOLD} pts)`,
     '`!unlink` — remove your Steam link (your points stay)',
     '`!help` — this list',
     '',
@@ -559,6 +567,7 @@ function payloadHelp(isAdminUser = false) {
       '**🔒 Admin only**',
       '`!addpoints @user <n>` — add points (negative to subtract)',
       '`!setpoints @user <n>` — set a point total',
+      '`!prizefor [@user]` — set a prize image (lists linked players if no @user)',
       '`!backup` — DM yourself a full database backup (+ readable CSV)'
     );
   }
@@ -913,6 +922,305 @@ async function actionBackup(user) {
   }
 }
 
+// ── Prizes ─────────────────────────────────────────────────────────────────
+// Admins set a per-player prize (an image + optional notes) with `!prizefor`.
+// A player views theirs with `!prize` and claims it via a button once they hit
+// PRIZE_THRESHOLD points — claiming DMs the admin to hand the prize over.
+
+// Short-lived per-(channel, admin) state for the multi-step `!prizefor` flow:
+// pick a player (by number), then upload the image.
+const prizeFlows = new Map(); // "channelId:userId" -> { step, ... , expires }
+const PRIZE_FLOW_TTL_MS = 5 * 60 * 1000;
+
+const prizeFlowKey = (message) => `${message.channel.id}:${message.author.id}`;
+
+function isImageAttachment(att) {
+  return (
+    (att.contentType || '').startsWith('image/') ||
+    /\.(png|jpe?g|gif|webp)$/i.test(att.name || '')
+  );
+}
+
+/** Kick off `!prizefor`: either jump straight to a mentioned user, or list the
+ *  linked players so the admin can pick one by number. */
+async function beginPrizeFor(message) {
+  const key = prizeFlowKey(message);
+  const mentioned = message.mentions.users.first();
+  if (mentioned) {
+    const name = message.mentions.members?.first()?.displayName ?? mentioned.username;
+    prizeFlows.set(key, {
+      step: 'upload',
+      targetId: mentioned.id,
+      targetName: name,
+      expires: Date.now() + PRIZE_FLOW_TTL_MS,
+    });
+    await message.reply(
+      `📸 Setting a prize for **${name}**. Send an **image attachment** here ` +
+        `(type any notes as the message text), or say \`cancel\`.\n` +
+        `_Tip: do this in my DMs if you want to keep it a surprise._`
+    );
+    return;
+  }
+
+  const players = db.getLinkedPlayers();
+  if (players.length === 0) {
+    await message.reply("Nobody's linked a Steam account yet — there's no one to set a prize for.");
+    return;
+  }
+  const users = await Promise.all(
+    players.map(async (p) => ({ discord_id: p.discord_id, name: await displayName(p) }))
+  );
+  prizeFlows.set(key, { step: 'pick', users, expires: Date.now() + PRIZE_FLOW_TTL_MS });
+  const list = users.map((u, i) => `**${i + 1}.** ${u.name}`).join('\n');
+  await message.reply(
+    `🎁 **Set a prize for who?** Reply with a number (or \`cancel\`):\n\n${list}`
+  );
+}
+
+/** Continue an in-progress `!prizefor` flow. Returns true if the message was
+ *  consumed by the flow (so the caller should stop processing it). */
+async function continuePrizeFlow(message) {
+  const key = prizeFlowKey(message);
+  const flow = prizeFlows.get(key);
+  if (!flow) return false;
+
+  // Let the admin restart cleanly by re-running the command.
+  if (/^!prizefor\b/i.test(message.content.trim())) {
+    prizeFlows.delete(key);
+    return false;
+  }
+  if (Date.now() > flow.expires) {
+    prizeFlows.delete(key);
+    return false;
+  }
+
+  const text = message.content.trim();
+  if (/^!?cancel$/i.test(text)) {
+    prizeFlows.delete(key);
+    await message.reply('❌ Prize setup cancelled.');
+    return true;
+  }
+
+  if (flow.step === 'pick') {
+    const n = Number.parseInt(text, 10);
+    if (!Number.isInteger(n) || n < 1 || n > flow.users.length) {
+      await message.reply(`Reply with a number from **1** to **${flow.users.length}**, or \`cancel\`.`);
+      return true;
+    }
+    const target = flow.users[n - 1];
+    flow.step = 'upload';
+    flow.targetId = target.discord_id;
+    flow.targetName = target.name;
+    flow.expires = Date.now() + PRIZE_FLOW_TTL_MS;
+    await message.reply(
+      `📸 Setting a prize for **${target.name}**. Send an **image attachment** here ` +
+        `(type any notes as the message text), or say \`cancel\`.`
+    );
+    return true;
+  }
+
+  if (flow.step === 'upload') {
+    const att = message.attachments.find(isImageAttachment);
+    if (!att) {
+      await message.reply('I need an **image attachment** for the prize. Attach a picture (with optional notes), or say `cancel`.');
+      return true;
+    }
+    let buffer;
+    try {
+      buffer = Buffer.from(await (await fetch(att.url)).arrayBuffer());
+    } catch (err) {
+      console.error(`[prize] image download failed: ${err.message}`);
+      await message.reply('Couldn\'t download that image — try sending it again.');
+      return true;
+    }
+    const notes = message.content.trim() || null;
+    db.setPrize(flow.targetId, {
+      image: buffer,
+      imageName: att.name || 'prize.png',
+      notes,
+      setBy: message.author.id,
+    });
+    prizeFlows.delete(key);
+    await message.reply(
+      `🎁 Prize set for **${flow.targetName}**! They can run \`!prize\` to view it and ` +
+        `claim it once they reach **${PRIZE_THRESHOLD}** points.`
+    );
+    return true;
+  }
+
+  return false;
+}
+
+/** One-shot prize set (used by the `/prizefor` slash command). */
+async function actionPrizeFor({ targetId, targetName, attachment, notes, setBy }) {
+  if (!attachment || !isImageAttachment(attachment)) {
+    return { content: 'The prize needs to be an **image** (png/jpg/gif/webp).' };
+  }
+  let buffer;
+  try {
+    buffer = Buffer.from(await (await fetch(attachment.url)).arrayBuffer());
+  } catch (err) {
+    console.error(`[prize] image download failed: ${err.message}`);
+    return { content: 'Couldn\'t download that image — try again.' };
+  }
+  db.setPrize(targetId, {
+    image: buffer,
+    imageName: attachment.name || 'prize.png',
+    notes: notes || null,
+    setBy,
+  });
+  return {
+    content:
+      `🎁 Prize set for **${targetName}**! They can run \`/prize\` to view it and ` +
+      `claim it once they reach **${PRIZE_THRESHOLD}** points.`,
+  };
+}
+
+/** The prize card a player sees from `!prize` / `/prize`. */
+function payloadPrize(user) {
+  const prize = db.getPrize(user.id);
+  if (!prize) {
+    return {
+      content:
+        `🎁 No prize is waiting for you yet, **${user.username}**. ` +
+        `Keep unlocking achievements — the admins hand these out.`,
+    };
+  }
+
+  const points = db.getPlayer(user.id)?.points ?? 0;
+  const eligible = points >= PRIZE_THRESHOLD;
+  const remaining = Math.max(0, PRIZE_THRESHOLD - points);
+
+  const file = new AttachmentBuilder(prize.image, { name: 'prize.png' });
+  const embed = new EmbedBuilder()
+    .setColor(prize.claimed ? 0x9e9e9e : eligible ? 0xffd700 : 0x607d8b)
+    .setTitle(`🎁 ${user.username}'s Prize`)
+    .setImage('attachment://prize.png')
+    .addFields(
+      { name: '🪵 Your points', value: `**${points}** / ${PRIZE_THRESHOLD}`, inline: true },
+      {
+        name: prize.claimed ? '📦 Status' : eligible ? '✅ Status' : '🔒 Status',
+        value: prize.claimed
+          ? 'Already claimed 🎉'
+          : eligible
+            ? 'Ready to claim!'
+            : `**${remaining}** pts to go`,
+        inline: true,
+      }
+    );
+  if (prize.notes) embed.setDescription(prize.notes);
+  embed.setFooter({
+    text: prize.claimed
+      ? 'The admin has been notified to hand it over.'
+      : eligible
+        ? 'Hit the button to claim it!'
+        : `Reach ${PRIZE_THRESHOLD} points to unlock the claim button.`,
+  });
+
+  const button = new ButtonBuilder()
+    .setCustomId(`prize_claim:${user.id}`)
+    .setLabel(prize.claimed ? 'Claimed' : 'Take Prize')
+    .setEmoji('🎁')
+    .setStyle(prize.claimed ? ButtonStyle.Secondary : ButtonStyle.Success)
+    .setDisabled(prize.claimed === 1);
+  const row = new ActionRowBuilder().addComponents(button);
+
+  return { embeds: [embed], components: [row], files: [file] };
+}
+
+/** DM the admin(s) that a prize was claimed; fall back to the channel if no DM
+ *  lands. */
+async function notifyPrizeClaim(prize, recipientId, username, points) {
+  const msg =
+    `🎁 **Prize claimed!** <@${recipientId}> (**${username}**) just claimed their prize ` +
+    `with **${points}** points — time to hand it over!`;
+
+  const targets = [];
+  if (prize.set_by) targets.push(prize.set_by);
+  if (OWNER_DISCORD_ID && !targets.includes(OWNER_DISCORD_ID)) targets.push(OWNER_DISCORD_ID);
+
+  let delivered = false;
+  for (const adminId of targets) {
+    try {
+      const u = await client.users.fetch(adminId);
+      await u.send(msg);
+      delivered = true;
+    } catch (err) {
+      console.warn(`[prize] couldn't DM admin ${adminId}: ${err.message}`);
+    }
+  }
+  if (!delivered) {
+    const ch = await getAchievementChannel();
+    if (ch) ch.send(msg).catch(() => {});
+  }
+}
+
+/** Handle a click on a prize's "Take Prize" button. */
+async function handlePrizeButton(interaction) {
+  const [action, recipientId] = interaction.customId.split(':');
+  if (action !== 'prize_claim') return;
+
+  if (interaction.user.id !== recipientId) {
+    return interaction.reply({
+      content: "🚫 That's not your prize to claim.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+  const prize = db.getPrize(recipientId);
+  if (!prize) {
+    return interaction.reply({
+      content: 'That prize is no longer available.',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+  if (prize.claimed) {
+    return interaction.reply({
+      content: '🎉 You already claimed this prize — the admin has been notified.',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+  const points = db.getPlayer(recipientId)?.points ?? 0;
+  if (points < PRIZE_THRESHOLD) {
+    return interaction.reply({
+      content:
+        `🔒 You need **${PRIZE_THRESHOLD - points}** more point${PRIZE_THRESHOLD - points === 1 ? '' : 's'} ` +
+        `to claim this (you have **${points}** / ${PRIZE_THRESHOLD}). Go unlock something!`,
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  // Atomic claim: markPrizeClaimed only flips an as-yet-unclaimed row, so a
+  // double-click can't notify the admin twice.
+  if (!db.markPrizeClaimed(recipientId)) {
+    return interaction.reply({
+      content: '🎉 Already claimed — the admin has been notified.',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  await notifyPrizeClaim(prize, recipientId, interaction.user.username, points);
+
+  await interaction.reply({
+    content: '🎉 **Prize claimed!** The admin has been pinged to hand it over.',
+    flags: MessageFlags.Ephemeral,
+  });
+
+  // Grey out the button on the original card so it reads as claimed.
+  try {
+    const claimedRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(interaction.customId)
+        .setLabel('Claimed')
+        .setEmoji('🎁')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(true)
+    );
+    await interaction.message.edit({ components: [claimedRow] });
+  } catch {
+    /* best-effort */
+  }
+}
+
 // ── Prefix (!) commands ──────────────────────────────────────────────────────
 
 // True if `userId` may run admin commands. When ADMIN_IDS is configured, only
@@ -964,6 +1272,17 @@ async function handleCommand(message) {
     case '!unlink':
       await message.reply(actionUnlink(message.author.id, message.author.username));
       return true;
+    case '!prize':
+      await message.reply(payloadPrize(message.author));
+      return true;
+    case '!prizefor': {
+      if (!isAdmin(message.author.id, message.member)) {
+        await message.reply('🔒 That command is admin-only.');
+        return true;
+      }
+      await beginPrizeFor(message);
+      return true;
+    }
     case '!survey': {
       const p = await payloadSurvey();
       await message.channel.send(p.content);
@@ -1057,6 +1376,18 @@ function buildSlashCommands() {
       .setName('backup')
       .setDescription('(Admin) DM yourself a full database backup')
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+      .setName('prize')
+      .setDescription('View (and claim) the prize an admin set for you'),
+    new SlashCommandBuilder()
+      .setName('prizefor')
+      .setDescription('(Admin) Set a prize image for a player')
+      .addUserOption((o) => o.setName('user').setDescription('Who the prize is for').setRequired(true))
+      .addAttachmentOption((o) =>
+        o.setName('image').setDescription('The prize picture').setRequired(true)
+      )
+      .addStringOption((o) => o.setName('notes').setDescription('Optional notes shown under the image'))
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   ].map((c) => c.toJSON());
 }
 
@@ -1076,6 +1407,19 @@ async function registerSlashCommands() {
 }
 
 client.on('interactionCreate', async (interaction) => {
+  if (interaction.isButton()) {
+    try {
+      await handlePrizeButton(interaction);
+    } catch (err) {
+      console.error(`[interaction] button error: ${err.message}`);
+      if (!interaction.replied && !interaction.deferred) {
+        interaction
+          .reply({ content: '💀 Something broke. Try again.', flags: MessageFlags.Ephemeral })
+          .catch(() => {});
+      }
+    }
+    return;
+  }
   if (!interaction.isChatInputCommand()) return;
   const name = interaction.commandName;
 
@@ -1145,6 +1489,25 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         return interaction.editReply(await actionBackup(interaction.user));
       }
+      case 'prize':
+        return interaction.reply(payloadPrize(interaction.user));
+      case 'prizefor': {
+        if (!isAdmin(interaction.user.id, interaction.member)) {
+          return interaction.reply({ content: '🔒 Admin-only.', flags: MessageFlags.Ephemeral });
+        }
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        const target = interaction.options.getUser('user');
+        const member = await interaction.guild?.members.fetch(target.id).catch(() => null);
+        return interaction.editReply(
+          await actionPrizeFor({
+            targetId: target.id,
+            targetName: member?.displayName ?? target.username,
+            attachment: interaction.options.getAttachment('image'),
+            notes: interaction.options.getString('notes'),
+            setBy: interaction.user.id,
+          })
+        );
+      }
       default:
         return;
     }
@@ -1163,9 +1526,19 @@ client.on('interactionCreate', async (interaction) => {
 
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
-  if (!message.content?.trim()) return;
+  // A prize-setup follow-up may be a bare number or an image with no text, so
+  // don't bail on empty content until we've given the flow a chance to consume it.
+  const blank = !message.content?.trim();
 
   try {
+    // Admins mid-`!prizefor` are in a short multi-step flow whose follow-ups
+    // (a number, then an image) aren't ! commands — intercept them first so the
+    // achievements-channel cleaner doesn't delete them.
+    if (prizeFlows.has(prizeFlowKey(message))) {
+      if (await continuePrizeFlow(message)) return;
+    }
+    if (blank) return;
+
     // Direct messages: Survivor chats privately, but ONLY about games and ONLY
     // with linked players (those who have run !link). Everyone else is ignored.
     if (message.channel.isDMBased()) {
