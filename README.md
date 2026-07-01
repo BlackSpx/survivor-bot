@@ -56,7 +56,7 @@ Available as both slash commands (`/points`) and prefix commands (`!points`).
 | `!link @user` | Looks up who that member has linked (prefix-only; anyone can use it) |
 | `/unlink` | Removes your Steam link (keeps your points) |
 | `/survey` | Survivor asks the group a random fun question |
-| `/feedback` | Opens a form to send the admins a bug report or suggestion (`!feedback` posts a button that opens the same form) |
+| `/feedback` | Opens a form to send the admins a bug report or suggestion — delivered by **DM** to every `ADMIN_DISCORD_IDS` admin (never posted to a channel unless no DM gets through). `!feedback` posts a button that opens the same form. |
 | `/prize` | View (and claim) the prize an admin set for you — the **Take Prize** button unlocks at 500 pts |
 | `/addpoints <user> <amount>` | **(Admin)** Add points (negative to subtract) |
 | `/setpoints <user> <amount>` | **(Admin)** Set a player's point total |
@@ -94,8 +94,14 @@ every *other* server channel.
 **Where commands work:** `!` commands run in the **achievements channel**
 (`ACHIEVEMENT_CHANNEL_ID`) and in **DMs**. That channel is commands-only — any
 message there that doesn't start with `!` is deleted immediately to keep it tidy.
-(If you leave `ACHIEVEMENT_CHANNEL_ID` blank, commands fall back to working
-anywhere so the bot is still usable before setup.) Slash (`/`) commands work
+To keep the feed clean, personal commands there (`!stats`, `!points`, `!rank`,
+`!leaderboard`, `!progress`, `!achievements`, `!help`, `!link`, `!unlink`,
+`!prize`, `!feedback`) and Survivor's reply **auto-delete after
+`ACH_COMMAND_CLEANUP_SEC` seconds** (default 60; set 0 to disable); `!feedback`'s
+prompt also vanishes the instant feedback is submitted. Admin actions are left
+visible. (If you leave `ACHIEVEMENT_CHANNEL_ID` blank, commands
+fall back to working anywhere so the bot is still usable before setup.) Slash
+(`/`) commands work
 anywhere as usual.
 
 **Personality:** he's a sarcastic, hard-to-get gamer — short and sharp for

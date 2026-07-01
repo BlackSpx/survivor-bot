@@ -64,6 +64,7 @@ const {
   VOICE_POINTS_PER_INTERVAL = '3',
   VOICE_POINTS_INTERVAL_MIN = '10',
   VOICE_DRIP_ANNOUNCE = 'true',
+  ACH_COMMAND_CLEANUP_SEC = '60',
   TRACK_ALL_GAMES = 'false',
 } = process.env;
 
@@ -104,6 +105,9 @@ const VOICE_DRIP_INTERVAL_SEC = (Number(VOICE_POINTS_INTERVAL_MIN) || 10) * 60;
 // When true, each drip posts ONE message per voice session and edits it in place
 // as the session total climbs (no per-interval spam). Set false to stay silent.
 const voiceDripAnnounce = VOICE_DRIP_ANNOUNCE === 'true';
+// In the achievement channel, auto-delete a player's read-only command + Survivor's
+// reply after this many seconds to keep the feed clean. 0 disables the cleanup.
+const achCleanupMs = Math.max(0, Number(ACH_COMMAND_CLEANUP_SEC) || 0) * 1000;
 // Count achievements from games OTHER than The Forest / Sons of the Forest.
 const trackAllGames = TRACK_ALL_GAMES === 'true';
 
@@ -1610,23 +1614,31 @@ async function showFeedbackModal(interaction) {
   await interaction.showModal(modal);
 }
 
-/** Deliver a submitted note to the admins (DM) and the log channel, so nothing
- *  gets lost even if DMs are closed. */
+/** Deliver a submitted note by DMing each admin (ADMIN_DISCORD_IDS, or the owner
+ *  if none are set). Only falls back to a channel post if we couldn't DM anyone,
+ *  so feedback is never silently lost but normally never clutters a channel. */
 async function deliverFeedback(user, text) {
   const msg =
     `📝 **Feedback from <@${user.id}> (${user.username})**:\n>>> ${text}`;
 
   const targets = ADMIN_IDS.length ? ADMIN_IDS : OWNER_DISCORD_ID ? [OWNER_DISCORD_ID] : [];
+  let dmed = false;
   for (const adminId of targets) {
     try {
       const u = await client.users.fetch(adminId);
       await u.send(msg);
+      dmed = true;
     } catch (err) {
       console.warn(`[feedback] couldn't DM admin ${adminId}: ${err.message}`);
     }
   }
-  const ch = (await fetchChannel(LOG_CHANNEL_ID)) ?? (await getAchievementChannel());
-  if (ch) ch.send(msg).catch(() => {});
+
+  // Last-resort fallback only: if no admin DM got through (e.g. DMs closed or no
+  // admins configured), post to the log/achievement channel so it isn't lost.
+  if (!dmed) {
+    const ch = (await fetchChannel(LOG_CHANNEL_ID)) ?? (await getAchievementChannel());
+    if (ch) ch.send(msg).catch(() => {});
+  }
 }
 
 /** Handle a submitted feedback modal. */
@@ -1636,6 +1648,9 @@ async function handleFeedbackSubmit(interaction) {
     return interaction.reply({ content: 'Nothing to send — the form was empty.', flags: MessageFlags.Ephemeral });
   }
   await deliverFeedback(interaction.user, text);
+  // Remove the "Give Feedback" button prompt now that it's been used (no-op for
+  // the /feedback modal, which has no source message).
+  await interaction.message?.delete().catch(() => {});
   return interaction.reply({
     content: '🙏 Thanks — your feedback landed with the admins. The tribe grows stronger.',
     flags: MessageFlags.Ephemeral,
@@ -1994,6 +2009,39 @@ client.on('interactionCreate', async (interaction) => {
 
 // ── Message routing ──────────────────────────────────────────────────────────
 
+// Personal, "just for me" commands that clutter the achievement feed. In that
+// channel we auto-remove both the command and Survivor's reply after achCleanupMs
+// so it stays a clean stream of achievements/milestones. Admin actions are left
+// visible. (!feedback also self-removes the instant feedback is submitted — see
+// handleFeedbackSubmit — this is just the fallback for an unused prompt.)
+const ACH_EPHEMERAL_CMDS = new Set([
+  '!help', '!commands', '!points', '!stats', '!card', '!rank',
+  '!leaderboard', '!achievements', '!progress', '!link', '!unlink',
+  '!prize', '!feedback', '!suggest',
+]);
+
+// Run a command in the achievement channel, then delete the command + Survivor's
+// reply after achCleanupMs. Captures the reply by briefly wrapping message.reply
+// (the ephemeral commands all answer that way). Needs Manage Messages.
+async function runEphemeralCommand(message) {
+  const sent = [];
+  const origReply = message.reply.bind(message);
+  message.reply = async (...a) => {
+    const m = await origReply(...a);
+    if (m) sent.push(m);
+    return m;
+  };
+  try {
+    await handleCommand(message);
+  } finally {
+    delete message.reply; // restore the prototype method
+  }
+  setTimeout(() => {
+    message.delete().catch(() => {});
+    for (const m of sent) m.delete().catch(() => {});
+  }, achCleanupMs);
+}
+
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
   // A prize-setup follow-up may be a bare number or an image with no text, so
@@ -2042,7 +2090,12 @@ client.on('messageCreate', async (message) => {
     // other (non-command) message gets deleted on sight to keep it clean.
     if (inAchievementChannel) {
       if (message.content.startsWith('!')) {
-        await handleCommand(message);
+        const cmd = message.content.trim().split(/\s+/)[0].toLowerCase();
+        if (achCleanupMs > 0 && ACH_EPHEMERAL_CMDS.has(cmd)) {
+          await runEphemeralCommand(message);
+        } else {
+          await handleCommand(message);
+        }
       } else {
         await deleteAndNotify(
           message,

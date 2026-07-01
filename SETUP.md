@@ -340,7 +340,9 @@ bot online all the time.
      `VOICE_LINK_GRACE_SECONDS`, `LOG_CHANNEL_ID`, `CHAT_COOLDOWN_MS`,
      `VOICE_POINTS_PER_INTERVAL` (voice drip points, default 3; 0 disables),
      `VOICE_POINTS_INTERVAL_MIN` (drip interval, default 10),
-     `VOICE_DRIP_ANNOUNCE` (live drip message on/off, default true)
+     `VOICE_DRIP_ANNOUNCE` (live drip message on/off, default true),
+     `ACH_COMMAND_CLEANUP_SEC` (auto-delete read-only commands + replies in the
+     achievement channel after N seconds, default 60; 0 disables)
 3. Railway redeploys automatically. Open the **Deploy Logs** and wait for
    `✅ Survivor is awake`.
 
