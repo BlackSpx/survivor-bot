@@ -61,6 +61,9 @@ const {
   GAME_VOICE_CHANNEL_ID = '',
   VOICE_KICK_UNLINKED = 'false',
   VOICE_LINK_GRACE_SECONDS = '120',
+  VOICE_POINTS_PER_INTERVAL = '3',
+  VOICE_POINTS_INTERVAL_MIN = '10',
+  VOICE_DRIP_ANNOUNCE = 'true',
   TRACK_ALL_GAMES = 'false',
 } = process.env;
 
@@ -92,6 +95,15 @@ const backfillOn = BACKFILL_EXISTING === 'true';
 const kickUnlinked = VOICE_KICK_UNLINKED === 'true';
 const VOICE_GRACE_SEC = Number(VOICE_LINK_GRACE_SECONDS) || 120;
 const VOICE_FLUSH_MS = 60 * 1000; // credit active voice sessions once a minute
+// Steady "drip" reward: every VOICE_DRIP_INTERVAL_SEC of cumulative voice time a
+// linked player earns VOICE_DRIP_POINTS points, silently (no announcement — the
+// big VOICE_MILESTONES hour thresholds still announce). Set VOICE_POINTS_PER_INTERVAL
+// to 0 to disable the drip and keep only the milestones.
+const VOICE_DRIP_POINTS = Math.max(0, Number(VOICE_POINTS_PER_INTERVAL) || 0);
+const VOICE_DRIP_INTERVAL_SEC = (Number(VOICE_POINTS_INTERVAL_MIN) || 10) * 60;
+// When true, each drip posts ONE message per voice session and edits it in place
+// as the session total climbs (no per-interval spam). Set false to stay silent.
+const voiceDripAnnounce = VOICE_DRIP_ANNOUNCE === 'true';
 // Count achievements from games OTHER than The Forest / Sons of the Forest.
 const trackAllGames = TRACK_ALL_GAMES === 'true';
 
@@ -460,6 +472,44 @@ async function pollAllPlayers() {
 
 const voiceSessions = new Map(); // discordId -> { since: ms } (active in the channel)
 const unlinkedKickTimers = new Map(); // discordId -> Timeout
+const voiceDripMsgs = new Map(); // discordId -> { message, points } (live drip message for the current session)
+
+// Post-or-edit a single "live" drip message per voice session, so the running
+// point total updates in place instead of spamming a new message each interval.
+async function announceVoiceDrip(player, gained) {
+  const channel = await getAchievementChannel();
+  if (!channel) return;
+  const entry = voiceDripMsgs.get(player.discord_id) ?? { message: null, points: 0 };
+  entry.points += gained;
+  const content =
+    `🎙️ <@${player.discord_id}> is racking up voice points — **+${entry.points} pts** this session and counting.`;
+  try {
+    if (entry.message) {
+      await entry.message.edit({ content, allowedMentions: { parse: [] } });
+    } else {
+      // Ping once on the first post; later edits never re-ping.
+      entry.message = await channel.send({ content, allowedMentions: { users: [player.discord_id] } });
+    }
+  } catch {
+    entry.message = null; // edit target vanished — re-post next interval
+  }
+  voiceDripMsgs.set(player.discord_id, entry);
+}
+
+// On leave, edit the live message one last time into a session summary.
+async function finalizeVoiceDrip(userId) {
+  const entry = voiceDripMsgs.get(userId);
+  voiceDripMsgs.delete(userId);
+  if (!entry?.message) return;
+  const total = db.getPlayer(userId)?.points ?? 0;
+  await entry.message
+    .edit({
+      content:
+        `🎙️ <@${userId}> left voice — earned **+${entry.points} pts** this session. Total: **${total} pts**.`,
+      allowedMentions: { parse: [] },
+    })
+    .catch(() => {});
+}
 
 async function handleVoiceMilestones(player, beforeSec, afterSec) {
   const crossed = voiceMilestonesCrossed(beforeSec / 3600, afterSec / 3600);
@@ -483,6 +533,25 @@ async function handleVoiceMilestones(player, beforeSec, afterSec) {
   }
 }
 
+// Steady points for time in voice: award VOICE_DRIP_POINTS for every whole
+// VOICE_DRIP_INTERVAL_SEC of cumulative voice time newly crossed. Optionally shows
+// a single live-updating message per session (VOICE_DRIP_ANNOUNCE), and still trips
+// role rewards if points cross a 100/200/300/500 threshold.
+async function handleVoiceDrip(player, beforeSec, afterSec) {
+  if (VOICE_DRIP_POINTS <= 0) return;
+  const intervalsCrossed =
+    Math.floor(afterSec / VOICE_DRIP_INTERVAL_SEC) - Math.floor(beforeSec / VOICE_DRIP_INTERVAL_SEC);
+  if (intervalsCrossed <= 0) return;
+  const gained = intervalsCrossed * VOICE_DRIP_POINTS;
+  const before = db.getPlayer(player.discord_id).points;
+  const after = db.addPoints(player.discord_id, gained);
+  if (voiceDripAnnounce) await announceVoiceDrip(player, gained);
+  const channel = await getAchievementChannel();
+  const name = await displayName(player);
+  await handleMilestones(channel, player.discord_id, name, before, after);
+  await assignRolesUpTo(player.discord_id, after);
+}
+
 /** Credit elapsed time for one active voice session. Only linked players earn. */
 async function creditVoiceSession(userId, { remove }) {
   const sess = voiceSessions.get(userId);
@@ -495,6 +564,7 @@ async function creditVoiceSession(userId, { remove }) {
   if (!player?.steam_id || elapsedSec < 1) return; // unlinked time isn't counted
   const before = db.getVoiceSeconds(userId);
   const after = db.addVoiceSeconds(userId, elapsedSec);
+  await handleVoiceDrip(player, before, after);
   await handleVoiceMilestones(player, before, after);
 }
 
@@ -556,6 +626,7 @@ async function onLeaveGameVoice(member) {
     unlinkedKickTimers.delete(member.id);
   }
   await creditVoiceSession(member.id, { remove: true });
+  await finalizeVoiceDrip(member.id);
 }
 
 client.on('voiceStateUpdate', async (oldState, newState) => {
@@ -602,9 +673,13 @@ async function initVoiceTracking() {
     if (!member.user.bot) onJoinGameVoice(member);
   }
   setInterval(() => flushVoiceSessions().catch(() => {}), VOICE_FLUSH_MS);
+  const drip =
+    VOICE_DRIP_POINTS > 0
+      ? `+${VOICE_DRIP_POINTS} pts / ${VOICE_DRIP_INTERVAL_SEC / 60} min`
+      : 'milestones only';
   console.log(
     `🎙️  Voice tracking on for channel ${GAME_VOICE_CHANNEL_ID} ` +
-      `(kick unlinked: ${kickUnlinked ? `yes, after ${VOICE_GRACE_SEC}s` : 'no'}).`
+      `(kick unlinked: ${kickUnlinked ? `yes, after ${VOICE_GRACE_SEC}s` : 'no'}; drip: ${drip}).`
   );
 }
 
@@ -690,11 +765,13 @@ function onCooldown(userId) {
 }
 
 // Rolling per-user message budget for the chat channel: each user may send up to
-// CHAT_BUDGET messages per CHAT_BUDGET_WINDOW_MS. In-memory by design — a restart
-// forgives everyone, and a rolling window needs no daily-reset bookkeeping.
-const CHAT_BUDGET = 5;
+// CHAT_BUDGET messages per CHAT_BUDGET_WINDOW_MS. The per-message timestamps are
+// in-memory (a restart forgives everyone), but the *limit* itself is persisted in
+// the DB so `!chatlimit` survives restarts/redeploys. Default 5.
+let CHAT_BUDGET = Number(db.getMeta('chat_limit')) || 5;
 const CHAT_BUDGET_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 const chatBudget = new Map(); // userId -> [timestamps within the window]
+const budgetNotified = new Set(); // userIds already told they're over budget (reset on replenish)
 
 /**
  * Try to spend one message from a user's rolling budget.
@@ -711,6 +788,7 @@ function spendChatBudget(userId) {
   }
   recent.push(now);
   chatBudget.set(userId, recent);
+  budgetNotified.delete(userId); // they have room again — allow a fresh notice next time
   return { allowed: true };
 }
 
@@ -763,13 +841,14 @@ async function converse(message, { dm = false } = {}) {
   db.appendChat(channelId, 'model', reply);
   db.trimChat(channelId, 50);
 
-  // Render any owner mention as a clickable link without pinging people on every
-  // reply. Set OWNER_PING=true to actually ping the owner when they're named.
-  const allowedMentions =
-    OWNER_PING === 'true' && OWNER_DISCORD_ID
-      ? { users: [OWNER_DISCORD_ID], repliedUser: true }
-      : { parse: [], repliedUser: true };
-  await message.reply({ content: reply, allowedMentions });
+  // In a server channel, tag the user Survivor is answering so it's clear who the
+  // reply is for. (Skip the tag in DMs — it's just the two of you there.) The
+  // owner is only pinged when OWNER_PING=true and they're actually named.
+  const mentionUsers = dm ? [] : [message.author.id];
+  if (OWNER_PING === 'true' && OWNER_DISCORD_ID) mentionUsers.push(OWNER_DISCORD_ID);
+  const allowedMentions = { users: mentionUsers, repliedUser: true };
+  const content = dm ? reply : `<@${message.author.id}> ${reply}`;
+  await message.reply({ content, allowedMentions });
 }
 
 // ── Command logic (shared by ! prefix and / slash commands) ──────────────────
@@ -812,6 +891,7 @@ function payloadHelp(isAdminUser = false) {
       '**🔒 Admin only**',
       '`!addpoints @user <n>` — add points (negative to subtract)',
       '`!setpoints @user <n>` — set a point total',
+      '`!chatlimit [<n>]` — show or set the chat channel\'s messages-per-hour limit',
       '`!prizefor [@user]` — set a prize image (lists linked players if no @user)',
       '`!backup` — DM yourself a full database backup (+ readable CSV)'
     );
@@ -934,6 +1014,14 @@ const ROLE_COLORS = {
 };
 const NO_ROLE_COLOR = 0x607d8b;
 
+/** Format a voice-seconds total as a compact "Xh Ym" (or "Ym" under an hour). */
+function formatVoiceTime(seconds) {
+  const total = Math.floor((seconds || 0) / 60);
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  return h ? `${h}h ${m}m` : `${m}m`;
+}
+
 async function payloadStats(user) {
   const player = db.getPlayer(user.id);
   if (!player) {
@@ -975,6 +1063,9 @@ async function payloadStats(user) {
     { name: '🪵 Points', value: `**${player.points}**`, inline: true },
     { name: '🏅 Rank', value: rank ? `#${rank} of ${board.length}` : '—', inline: true },
     { name: '🔥 Streak', value: `${streak}d · best ${player.best_streak || 0}`, inline: true },
+    ...(GAME_VOICE_CHANNEL_ID || player.voice_seconds
+      ? [{ name: '🎙️ Voice', value: formatVoiceTime(player.voice_seconds), inline: true }]
+      : []),
     { name: '🎖️ Rank role', value: role ? `${role.emoji} ${role.name}` : '— none yet', inline: true },
     {
       name: '🎯 Next role',
@@ -1654,6 +1745,29 @@ async function handleCommand(message) {
       );
       return true;
     }
+    case '!chatlimit': {
+      if (!isAdmin(message.author.id, message.member)) {
+        await message.reply('🔒 That command is admin-only.');
+        return true;
+      }
+      const raw = args.find((a) => /^\d+$/.test(a));
+      if (raw === undefined) {
+        await message.reply(
+          `🪵 Chat limit is currently **${CHAT_BUDGET}** messages per hour per player. ` +
+            `Set it with \`!chatlimit <number>\`.`
+        );
+        return true;
+      }
+      const n = parseInt(raw, 10);
+      if (n < 1 || n > 100) {
+        await message.reply('Pick a number between **1** and **100**.');
+        return true;
+      }
+      CHAT_BUDGET = n;
+      db.setMeta('chat_limit', n);
+      await message.reply(`✅ Chat limit set to **${n}** messages per hour per player.`);
+      return true;
+    }
     default:
       // Friendly nudge for typo'd commands. (Commands only run in the
       // achievements channel and DMs now, so there's no free-chat channel to
@@ -1953,11 +2067,17 @@ client.on('messageCreate', async (message) => {
       }
       const budget = spendChatBudget(message.author.id);
       if (!budget.allowed) {
-        await deleteAndNotify(
-          message,
-          `🪵 <@${message.author.id}> you've used your ${CHAT_BUDGET} messages this hour — ` +
-            `give the forest a rest (try again in ~${budget.retryMinutes} min).`
-        );
+        // Don't delete their message — just tell them once, then stay quiet until
+        // their budget replenishes (the count keeps rolling on its own).
+        if (!budgetNotified.has(message.author.id)) {
+          budgetNotified.add(message.author.id);
+          await message.reply({
+            content:
+              `🪵 <@${message.author.id}> you've used your ${CHAT_BUDGET} messages this hour — ` +
+              `give the forest a rest (try again in ~${budget.retryMinutes} min).`,
+            allowedMentions: { users: [message.author.id], repliedUser: true },
+          });
+        }
         return;
       }
       if (onCooldown(message.author.id)) return; // finer per-message throttle
