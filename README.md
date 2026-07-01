@@ -60,6 +60,7 @@ Available as both slash commands (`/points`) and prefix commands (`!points`).
 | `/prize` | View (and claim) the prize an admin set for you — the **Take Prize** button unlocks at 500 pts |
 | `/addpoints <user> <amount>` | **(Admin)** Add points (negative to subtract) |
 | `/setpoints <user> <amount>` | **(Admin)** Set a player's point total |
+| `!chatlimit [<n>]` | **(Admin)** Show or set the chat channel's messages-per-hour limit (persists across restarts); prefix-only |
 | `!prizefor [@user]` | **(Admin)** Set a prize image for a player — lists linked players to pick from if no `@user` (prefix flow); `/prizefor <user> <image> [notes]` does it in one shot |
 | `/backup` | **(Admin)** DM yourself a full DB backup + a readable CSV of every player |
 
@@ -73,15 +74,17 @@ Available as both slash commands (`/points`) and prefix commands (`!points`).
 
 Survivor talks in **exactly one server channel** — the one you set as
 `SURVIVOR_CHAT_CHANNEL_ID`. In that channel he replies to **every** message and
-holds a real back-and-forth conversation. Because each message is tagged with the
+holds a real back-and-forth conversation, **@mentioning the person he's answering**
+so it's clear who each reply is for. Because each message is tagged with the
 speaker's name, the whole group can talk to him at once and he answers each
 person specifically. **Only linked players may talk here** — an unlinked user's
 message is deleted with a nudge to `!link` first. Two more layers keep it from
 spamming: a per-user **cooldown** (`CHAT_COOLDOWN_MS`) throttles back-to-back
-replies, and a rolling **budget of 5 messages per user per hour** caps the volume
-— once a user is over budget their extra messages are deleted with a quick
-heads-up. (All deletion needs the bot to have **Manage Messages** in that
-channel.)
+replies, and a rolling **budget of messages per user per hour** (default **5**,
+change it live with `!chatlimit <n>`) caps the volume. Over-budget messages are
+**not** deleted — Survivor just tells the user once how long until it replenishes,
+then stays quiet for them until it does. (Deleting the unlinked/commands-only
+messages needs the bot to have **Manage Messages** in that channel.)
 
 He also chats **one-on-one in DMs**, but only with **linked players** and only
 about **video games** — DM him anything off-topic and he'll deflect it in
@@ -186,6 +189,16 @@ posts a newbie→veteran announcement in the achievement channel:
 | 5h | 🗣️ Voice Regular | +40 |
 | 10h | 🔥 Voice Veteran | +75 |
 | 25h | 👑 Voice Legend | +150 |
+
+On top of those milestones, a steady **drip** pays out
+`VOICE_POINTS_PER_INTERVAL` points (default **3**) for every
+`VOICE_POINTS_INTERVAL_MIN` minutes (default **10**) of voice time — set
+`VOICE_POINTS_PER_INTERVAL=0` to turn the drip off. When `VOICE_DRIP_ANNOUNCE` is
+`true` (default), each voice session posts **one** message in the achievement
+channel and edits it in place as the total climbs (`+3… +6… +9 pts this session`),
+finalizing to a summary when the player leaves — so it never floods the feed. Each
+player's running voice time also shows as a 🎙️ **Voice** field on their `!stats`
+card.
 
 Set **`VOICE_KICK_UNLINKED=true`** to also DM anyone who joins the channel without
 a linked Steam and disconnect them after `VOICE_LINK_GRACE_SECONDS` (default 120)

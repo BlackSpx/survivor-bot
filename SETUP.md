@@ -337,7 +337,10 @@ bot online all the time.
    - `GAME_VOICE_CHANNEL_ID` (optional — enables voice-hour bonuses)
    - Optional feature toggles (see `.env.example`): `NOW_PLAYING_ENABLED`,
      `RECAP_ENABLED`, `BACKFILL_EXISTING`, `TRACK_ALL_GAMES`, `VOICE_KICK_UNLINKED`,
-     `VOICE_LINK_GRACE_SECONDS`, `LOG_CHANNEL_ID`, `CHAT_COOLDOWN_MS`
+     `VOICE_LINK_GRACE_SECONDS`, `LOG_CHANNEL_ID`, `CHAT_COOLDOWN_MS`,
+     `VOICE_POINTS_PER_INTERVAL` (voice drip points, default 3; 0 disables),
+     `VOICE_POINTS_INTERVAL_MIN` (drip interval, default 10),
+     `VOICE_DRIP_ANNOUNCE` (live drip message on/off, default true)
 3. Railway redeploys automatically. Open the **Deploy Logs** and wait for
    `✅ Survivor is awake`.
 
@@ -382,7 +385,7 @@ Done — the bot now runs 24/7 and survives restarts.
 | Roles aren't given out | Bot's role isn't **above** the reward roles, or it lacks **Manage Roles** (Parts 2d & 3b). Check logs for `[roles] failed…`. |
 | Survivor won't chat at all | `SURVIVOR_CHAT_CHANNEL_ID` is blank or is the wrong channel ID (Part 4). Startup log shows which channel he's locked to. He only talks in that one channel. |
 | Survivor replies are generic/canned | `GEMINI_API_KEY` is missing or invalid. Announcements still post; check logs for `[survivor] Gemini API error`. |
-| Survivor deletes my chat messages | The chat channel is **linked players only** — run `!link <steamid64>` first. (Or you're over the 5-messages-per-hour budget.) |
+| Survivor deletes my chat messages | The chat channel is **linked players only** — run `!link <steamid64>` first. (Over-limit messages are **not** deleted anymore — Survivor just pauses replying until your hourly budget refills. Tune it with `!chatlimit <n>`.) |
 | Voice hours never announce | `GAME_VOICE_CHANNEL_ID` is blank/wrong, or the player hasn't linked their Steam (only linked players earn voice time). |
 | Unlinked users aren't kicked from voice | Set `VOICE_KICK_UNLINKED=true` and give the bot the **Move Members** permission; check logs for `[voice] couldn't disconnect`. |
 | Bot offline after closing terminal | Expected when running locally — do Part 8 (Railway) for 24/7 uptime. |
