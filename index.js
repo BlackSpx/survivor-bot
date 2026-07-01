@@ -18,6 +18,9 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
 } from 'discord.js';
 
 import * as db from './src/db.js';
@@ -31,6 +34,7 @@ import {
 import * as survivor from './src/survivor.js';
 import * as health from './src/health.js';
 import {
+  LINK_ROLE,
   REWARDS,
   milestonesCrossed,
   rewardForPoints,
@@ -176,6 +180,31 @@ async function assignRole(discordId, roleName) {
     } catch (err) {
       console.warn(
         `[roles] failed to give "${roleName}" to ${discordId}: ${err.message}. ` +
+          `Check the bot's role is ABOVE "${roleName}" and it has Manage Roles.`
+      );
+    }
+  }
+}
+
+/** Take a role away across every guild (used when a player unlinks). Silently
+ *  skips guilds where the role or member is missing. */
+async function removeRole(discordId, roleName) {
+  for (const guild of client.guilds.cache.values()) {
+    const role = guild.roles.cache.find((r) => r.name === roleName);
+    if (!role) continue;
+    let member;
+    try {
+      member = await guild.members.fetch(discordId);
+    } catch {
+      continue;
+    }
+    if (!member.roles.cache.has(role.id)) continue;
+    try {
+      await member.roles.remove(role);
+      console.log(`[roles] removed "${roleName}" from ${discordId}`);
+    } catch (err) {
+      console.warn(
+        `[roles] failed to remove "${roleName}" from ${discordId}: ${err.message}. ` +
           `Check the bot's role is ABOVE "${roleName}" and it has Manage Roles.`
       );
     }
@@ -544,6 +573,27 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
   }
 });
 
+// A player can `!link` from a DM before ever joining the server, so there's no
+// member to give the Castaway role to at link time. Catch them here: when a
+// linked user joins the guild, grant it.
+client.on('guildMemberAdd', async (member) => {
+  try {
+    if (member.user.bot) return;
+    if (!db.getPlayer(member.id)?.steam_id) return;
+    await assignRole(member.id, LINK_ROLE.role);
+  } catch (err) {
+    console.warn(`[roles] guildMemberAdd error for ${member.id}: ${err.message}`);
+  }
+});
+
+/** On boot, give the Castaway role to every linked player who's missing it
+ *  (e.g. players who linked before this feature existed). Safe to re-run. */
+async function backfillLinkRole() {
+  for (const player of db.getLinkedPlayers()) {
+    await assignRole(player.discord_id, LINK_ROLE.role).catch(() => {});
+  }
+}
+
 /** On boot, pick up anyone already sitting in the voice channel. */
 async function initVoiceTracking() {
   if (!GAME_VOICE_CHANNEL_ID) return;
@@ -746,6 +796,7 @@ function payloadHelp(isAdminUser = false) {
     '',
     '**🎉 For fun**',
     '`!survey` — I ask the group a random (unhinged) question',
+    '`!feedback` — send the admins a bug report or suggestion',
     `\`!prize\` — view & claim the prize an admin set for you (needs ${PRIZE_THRESHOLD} pts)`,
     '`!unlink` — remove your Steam link (your points stay)',
     '`!help` — this list',
@@ -1019,12 +1070,16 @@ async function actionLink(userId, username, steamId) {
   }
 
   db.linkPlayer(userId, steamId);
+  // Welcome them into the tribe. If they linked from a DM and aren't in the
+  // server yet, assignRole just no-ops — guildMemberAdd grants it when they join.
+  assignRole(userId, LINK_ROLE.role).catch(() => {});
   const summary = await getPlayerSummary(steamId);
   if (summary?.personaname) db.setSteamName(userId, summary.personaname);
   const named = summary?.personaname ? ` account **${summary.personaname}**` : '';
   return {
     content:
       `🔗 Linked **${username}** to Steam${named}. ` +
+      `You're a ${LINK_ROLE.emoji} **${LINK_ROLE.name}** now — welcome to the tribe. ` +
       `Go unlock something — I'm watching. Try \`!stats\` to see your card or \`!help\` for everything.`,
   };
 }
@@ -1035,6 +1090,9 @@ function actionUnlink(userId, username) {
     return { content: `**${username}**, you don't have a Steam account linked.` };
   }
   db.unlinkPlayer(userId);
+  // Strip the tribe role so channel access follows link status exactly. Their
+  // point-milestone roles stay — only the Castaway entry role is removed.
+  removeRole(userId, LINK_ROLE.role).catch(() => {});
   return {
     content:
       `🔌 Unlinked **${username}** from Steam. Your points stay put — ` +
@@ -1425,6 +1483,74 @@ async function handlePrizeButton(interaction) {
   }
 }
 
+// ── Feedback & suggestions ───────────────────────────────────────────────────
+// Players open a modal (a popup form with a real Submit button, so Enter just
+// adds a newline) and their note is DM'd to the admins + posted to the log
+// channel. Modals can only be opened from an interaction, so `!feedback` posts a
+// button to click, while `/feedback` opens the modal straight away.
+
+/** The little "Give Feedback" button used by the `!feedback` prefix command. */
+function feedbackButtonPayload() {
+  const button = new ButtonBuilder()
+    .setCustomId('feedback_open')
+    .setLabel('Give Feedback')
+    .setEmoji('📝')
+    .setStyle(ButtonStyle.Primary);
+  return {
+    content: '📝 Got a bug, an idea, or a suggestion? Hit the button and tell the admins.',
+    components: [new ActionRowBuilder().addComponents(button)],
+  };
+}
+
+/** Pop the feedback form. Must be the first response to the interaction (you
+ *  can't showModal after replying/deferring). */
+async function showFeedbackModal(interaction) {
+  const input = new TextInputBuilder()
+    .setCustomId('feedback_text')
+    .setLabel('Your feedback or suggestion')
+    .setStyle(TextInputStyle.Paragraph)
+    .setPlaceholder('A bug you hit, a feature you want, a command idea…')
+    .setRequired(true)
+    .setMaxLength(1000);
+  const modal = new ModalBuilder()
+    .setCustomId('feedback_submit')
+    .setTitle('Feedback & Suggestions')
+    .addComponents(new ActionRowBuilder().addComponents(input));
+  await interaction.showModal(modal);
+}
+
+/** Deliver a submitted note to the admins (DM) and the log channel, so nothing
+ *  gets lost even if DMs are closed. */
+async function deliverFeedback(user, text) {
+  const msg =
+    `📝 **Feedback from <@${user.id}> (${user.username})**:\n>>> ${text}`;
+
+  const targets = ADMIN_IDS.length ? ADMIN_IDS : OWNER_DISCORD_ID ? [OWNER_DISCORD_ID] : [];
+  for (const adminId of targets) {
+    try {
+      const u = await client.users.fetch(adminId);
+      await u.send(msg);
+    } catch (err) {
+      console.warn(`[feedback] couldn't DM admin ${adminId}: ${err.message}`);
+    }
+  }
+  const ch = (await fetchChannel(LOG_CHANNEL_ID)) ?? (await getAchievementChannel());
+  if (ch) ch.send(msg).catch(() => {});
+}
+
+/** Handle a submitted feedback modal. */
+async function handleFeedbackSubmit(interaction) {
+  const text = interaction.fields.getTextInputValue('feedback_text').trim();
+  if (!text) {
+    return interaction.reply({ content: 'Nothing to send — the form was empty.', flags: MessageFlags.Ephemeral });
+  }
+  await deliverFeedback(interaction.user, text);
+  return interaction.reply({
+    content: '🙏 Thanks — your feedback landed with the admins. The tribe grows stronger.',
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
 // ── Prefix (!) commands ──────────────────────────────────────────────────────
 
 // True if `userId` may run admin commands. When ADMIN_IDS is configured, only
@@ -1492,6 +1618,10 @@ async function handleCommand(message) {
       await message.channel.send(p.content);
       return true;
     }
+    case '!feedback':
+    case '!suggest':
+      await message.reply(feedbackButtonPayload());
+      return true;
     case '!backup': {
       if (!isAdmin(message.author.id, message.member)) {
         await message.reply('🔒 That command is admin-only.');
@@ -1565,6 +1695,9 @@ function buildSlashCommands() {
     new SlashCommandBuilder().setName('unlink').setDescription('Unlink your Steam ID'),
     new SlashCommandBuilder().setName('survey').setDescription('Survivor asks the group a question'),
     new SlashCommandBuilder()
+      .setName('feedback')
+      .setDescription('Send feedback or a suggestion to the admins'),
+    new SlashCommandBuilder()
       .setName('addpoints')
       .setDescription('(Admin) Add points to a player')
       .addUserOption((o) => o.setName('user').setDescription('Player').setRequired(true))
@@ -1613,9 +1746,26 @@ async function registerSlashCommands() {
 client.on('interactionCreate', async (interaction) => {
   if (interaction.isButton()) {
     try {
-      await handlePrizeButton(interaction);
+      if (interaction.customId === 'feedback_open') {
+        await showFeedbackModal(interaction);
+      } else {
+        await handlePrizeButton(interaction);
+      }
     } catch (err) {
       console.error(`[interaction] button error: ${err.message}`);
+      if (!interaction.replied && !interaction.deferred) {
+        interaction
+          .reply({ content: '💀 Something broke. Try again.', flags: MessageFlags.Ephemeral })
+          .catch(() => {});
+      }
+    }
+    return;
+  }
+  if (interaction.isModalSubmit()) {
+    try {
+      if (interaction.customId === 'feedback_submit') await handleFeedbackSubmit(interaction);
+    } catch (err) {
+      console.error(`[interaction] modal error: ${err.message}`);
       if (!interaction.replied && !interaction.deferred) {
         interaction
           .reply({ content: '💀 Something broke. Try again.', flags: MessageFlags.Ephemeral })
@@ -1668,6 +1818,8 @@ client.on('interactionCreate', async (interaction) => {
       case 'survey':
         await interaction.deferReply();
         return interaction.editReply(await payloadSurvey());
+      case 'feedback':
+        return showFeedbackModal(interaction);
       case 'addpoints':
       case 'setpoints': {
         if (!isAdmin(interaction.user.id, interaction.member)) {
@@ -1848,6 +2000,7 @@ client.once('clientReady', async () => {
   loadChatHistory();
   await registerSlashCommands();
   startRecapScheduler();
+  await backfillLinkRole();
   await initVoiceTracking();
 
   await pollAllPlayers();

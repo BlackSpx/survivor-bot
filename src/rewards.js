@@ -1,3 +1,9 @@
+// The entry role every player gets the moment they link a Steam account (0 pts).
+// It sits below all the point-milestone rewards below and is meant to be the
+// role you lock the survivor/achievement/voice channels to, so only linked
+// players can join. Lock channels to this role's NAME in Discord's permissions.
+export const LINK_ROLE = { emoji: '🪂', name: 'Castaway', role: 'Castaway' };
+
 // Hardcoded milestone rewards. Each entry maps a point threshold to a
 // reward label and the Discord role name that gets assigned at that threshold.
 

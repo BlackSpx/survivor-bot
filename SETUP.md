@@ -108,26 +108,33 @@ The bot assigns these roles automatically, but **you must create them first**,
 spelled **exactly** like this (capitalization matters):
 
 1. In Discord, go to **Server Settings → Roles → Create Role**.
-2. Create these four roles, one at a time:
+2. Create these five roles, one at a time:
+   - `Castaway`
    - `Forest Rookie`
    - `Axe Master`
    - `Base Builder`
    - `Forest Legend`
+
+`Castaway` is handed out the instant a player runs `!link` (and removed on
+`!unlink`). If you want **only linked players** to be able to join the
+survivor/achievement/voice channels, set those channels' permissions so only
+`Castaway` can view/connect.
 
 ### ⚠️ 3b. Move the bot's role ABOVE the reward roles (critical!)
 Discord only lets a bot assign roles that sit **below** its own role.
 
 1. Still in **Server Settings → Roles**, find the bot's role. It's usually named
    `Survivor` (same as the bot) and was created automatically when you invited it.
-2. **Drag it up** so it sits **above** all four reward roles in the list.
+2. **Drag it up** so it sits **above** all five reward roles in the list.
 3. The order from top to bottom should look like:
    ```
    (your admin roles)
-   Survivor          ← the bot's role, must be above the four below
+   Survivor          ← the bot's role, must be above the five below
    Forest Legend
    Base Builder
    Axe Master
    Forest Rookie
+   Castaway
    ```
 If you skip this, the bot will run but role-assignment will silently fail (you'll
 see a `[roles] failed…` line in the logs).

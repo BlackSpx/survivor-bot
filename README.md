@@ -56,6 +56,7 @@ Available as both slash commands (`/points`) and prefix commands (`!points`).
 | `!link @user` | Looks up who that member has linked (prefix-only; anyone can use it) |
 | `/unlink` | Removes your Steam link (keeps your points) |
 | `/survey` | Survivor asks the group a random fun question |
+| `/feedback` | Opens a form to send the admins a bug report or suggestion (`!feedback` posts a button that opens the same form) |
 | `/prize` | View (and claim) the prize an admin set for you — the **Take Prize** button unlocks at 500 pts |
 | `/addpoints <user> <amount>` | **(Admin)** Add points (negative to subtract) |
 | `/setpoints <user> <amount>` | **(Admin)** Set a player's point total |
@@ -147,10 +148,23 @@ The first time the bot sees a player it has two modes, controlled by
   assigns whatever reward roles they've earned. Use this if you want everyone to
   start with scores reflecting what they've already done.
 
+### The link role (Castaway)
+
+The moment a player links a Steam account with `!link`, the bot gives them the
+**🪂 Castaway** role (0 points — it sits below every milestone role). It's stripped
+again on `!unlink`. Lock your survivor/achievement/voice channels to this role in
+Discord's channel permissions and only linked players can join them.
+
+- Linked from a **DM** before joining the server? The role is granted the moment
+  they join (via `guildMemberAdd`).
+- Players who linked **before** this feature existed get it automatically on the
+  next boot (a one-time backfill).
+
 ### Milestone rewards
 
 | Points | Reward | Discord role assigned |
 | --- | --- | --- |
+| linked | 🪂 Castaway | `Castaway` |
 | 100 | 🎖️ Forest Rookie | `Forest Rookie` |
 | 200 | 🪓 Axe Master | `Axe Master` |
 | 300 | 🏠 Base Builder | `Base Builder` |
@@ -237,10 +251,13 @@ back-catalogue in as points; only unlocks earned afterward count.
 
 ## 2. Create the reward roles in Discord
 
-Create four roles with these **exact names**:
-`Forest Rookie`, `Axe Master`, `Base Builder`, `Forest Legend`.
+Create five roles with these **exact names**:
+`Castaway`, `Forest Rookie`, `Axe Master`, `Base Builder`, `Forest Legend`.
 
-> **Important:** drag the **bot's own role above all four** in
+`Castaway` is the entry role given on `!link` — lock your channels to it if you
+want only linked players to be able to join them.
+
+> **Important:** drag the **bot's own role above all five** in
 > **Server Settings → Roles**. Discord only lets a bot assign roles that sit
 > *below* its highest role.
 
